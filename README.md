@@ -1,0 +1,73 @@
+# gh-arc
+
+Review GitHub pull requests and stacks side by side, the way Phabricator's Differential did. A `gh` extension that serves a local review page for any pull request: the stack it sits in, its existing review threads, draft inline comments, and one submitted review.
+
+The diff viewer comes from [local-arc](https://github.com/emersonding/local-arc) (MIT, Emerson Ding); gh-arc puts GitHub behind it.
+
+## Install
+
+```sh
+gh extension install michaelhan-yolo/gh-arc
+```
+
+To work on it, install from a clone instead; edits take effect on the next `gh arc`:
+
+```sh
+git clone https://github.com/michaelhan-yolo/gh-arc ~/gh-arc   # the folder name must start with gh-
+cd ~/gh-arc && gh extension install .
+```
+
+It needs Node 18+ and a logged-in `gh` (`gh auth login`). There are no runtime dependencies.
+
+## Use
+
+```sh
+gh arc                      # the current branch's pull request, or your inbox
+gh arc 11530                # a pull request in the current repository
+gh arc octo/widgets#12      # any repository
+gh arc https://github.com/octo/widgets/pull/12/files
+gh arc my-branch            # the pull request for a branch
+gh arc inbox                # needs your review, yours, reviewed by you
+gh arc serve                # start the server only
+```
+
+One server on `127.0.0.1:7799` serves every pull request, and running `gh arc` again reuses it. Any pull request URL works with the host swapped: `github.com/o/r/pull/12` becomes `127.0.0.1:7799/o/r/pull/12`. Options: `-R owner/repo`, `-p <port>`, `--no-open`.
+
+## What you get
+
+- **Side by side or unified diffs**, with intraline highlights, a file tree, a filter, and context that expands 20 lines at a time from the merge base and head.
+- **The stack**: pull requests chained by base branch, drawn as a graph from the top of the stack down to the trunk, with each one's review state, checks and size. `‹ #n Stack 2/7 #m ›` in the top bar, or `[` and `]`, move down and up.
+- **Existing threads inline**, with resolve, unresolve and reply. Resolved threads start collapsed; outdated ones sit under the details with the hunk they were left on.
+- **Phabricator-style review**: inline comments and replies stay drafts (saved in `~/.gh-arc/drafts`, so they survive a reload) until you submit them in one review as Comment, Accept or Request changes. A pending review you started on github.com goes out with it.
+- **Viewed files** sync with GitHub's checkbox and collapse. Lock files, generated files and diffs over 1,500 lines start collapsed.
+- **Narrower views**: one commit, or everything since your last review. You can comment on the right side when it's the head commit; other views are read-only.
+- **Details**: author, branches, reviewers, checks, labels, the description and the conversation, rendered by GitHub. Links to other pull requests open here.
+- **Inbox**: needs your review, your pull requests, and the ones you've reviewed, grouped into stacks.
+- Light and dark themes follow the system.
+
+Keys: `j` and `k` step through files, `[` and `]` walk the stack, and ⌘/Ctrl+Enter saves a comment or submits the review.
+
+## How it works
+
+`gh arc` starts a Node server on 127.0.0.1. The server reads your token once from `gh auth token` and calls GitHub's GraphQL and REST APIs; the token never reaches the page. Diffs come from the pull request diff endpoint, which falls back to the files API past GitHub's size limit. The stack comes from your repository's open pull requests, cached for a minute.
+
+Submitting a review gets or creates your pending review on GitHub, adds each draft as a thread or reply, and then submits it with the action you chose. If GitHub rejects a draft (a line outside the diff, say), the draft stays local with the error, the rest wait in the pending review, and nothing is submitted until you resubmit.
+
+The server acts with your GitHub credentials, so it only answers requests addressed to `127.0.0.1` or `localhost`. Writes also need a token that is minted per server and embedded in the page, and the page runs under a CSP that allows only its own scripts.
+
+## Limits
+
+- GitHub accepts review comments only on lines inside a pull request's hunks, so lines from expanded context can't take comments.
+- A range comment stays within one hunk.
+- The details show the latest 100 commits, reviews and conversation comments.
+- github.com only; GitHub Enterprise isn't wired up.
+
+## Develop
+
+```sh
+npm install
+npm test                  # unit and API tests against an in-memory GitHub
+npx playwright test       # the review page in Chromium, same fake GitHub
+```
+
+`tests/support/fake-github.js` stands in for GitHub (`GH_ARC_API_URL`, `GH_ARC_TOKEN`, `GH_ARC_HOME` point gh-arc at it), so no test touches a real pull request.

@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="gh-arc-token" content="__GH_ARC_TOKEN__">
+  <title>gh-arc</title>
+  <link rel="stylesheet" href="/assets/viewer.css">
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <div class="titlebar">
+        <a class="home-link" href="/" aria-label="Open your inbox" title="Inbox">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M3 11.5 12 4l9 7.5"></path>
+            <path d="M5.5 10.5V20h13v-9.5"></path>
+            <path d="M9.5 20v-6h5v6"></path>
+          </svg>
+        </a>
+        <div class="titlebar-text">
+          <h1 id="pr-heading">Loading…</h1>
+          <div id="pr-subheading" class="muted"></div>
+        </div>
+      </div>
+      <div class="toolbar" role="toolbar" aria-label="Diff controls">
+        <nav id="stack-nav" class="stack-nav" aria-label="Stack" hidden></nav>
+        <div class="segmented" role="group" aria-label="Diff layout">
+          <button type="button" id="mode-split" class="seg active">Side by side</button>
+          <button type="button" id="mode-unified" class="seg">Unified</button>
+        </div>
+        <button type="button" id="comments-toggle" class="toolbar-action">Hide comments</button>
+        <button type="button" id="review-jump" class="primary-action">Review</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <aside class="sidebar">
+        <input id="file-filter" type="search" placeholder="Filter files" aria-label="Filter files">
+        <div id="summary" class="summary"></div>
+        <nav id="file-list" class="file-list" aria-label="Changed files"></nav>
+      </aside>
+      <div id="sidebar-resizer" class="sidebar-resizer" role="separator" aria-orientation="vertical" aria-label="Resize file list" tabindex="0"></div>
+      <section id="content" class="content" aria-live="polite"></section>
+    </main>
+  </div>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <script src="/assets/common.js"></script>
+  <script src="/assets/patch-paths.js"></script>
+  <script src="/assets/viewer.js"></script>
+</body>
+</html>
