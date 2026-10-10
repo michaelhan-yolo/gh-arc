@@ -25,6 +25,7 @@
       </div>
       <div class="toolbar" role="toolbar" aria-label="Diff controls">
         <nav id="stack-nav" class="stack-nav" aria-label="Stack" hidden></nav>
+        <div id="versions-nav" class="versions-nav" hidden></div>
         <div class="segmented" role="group" aria-label="Diff layout">
           <button type="button" id="mode-split" class="seg active">Side by side</button>
           <button type="button" id="mode-unified" class="seg">Unified</button>
@@ -36,9 +37,15 @@
 
     <main class="layout">
       <aside class="sidebar">
-        <input id="file-filter" type="search" placeholder="Filter files" aria-label="Filter files">
-        <div id="summary" class="summary"></div>
-        <nav id="file-list" class="file-list" aria-label="Changed files"></nav>
+        <nav id="sidebar-stack" class="sidebar-stack" aria-label="Your stacks"></nav>
+        <div id="sidebar-split" class="sidebar-split" role="separator" aria-orientation="horizontal"
+          aria-label="Resize your stacks and the file list" title="Drag to resize; double-click to reset" tabindex="0"></div>
+        <div class="sidebar-files">
+          <div id="files-heading" class="side-stack-heading metadata-section-title"><span>Files</span></div>
+          <input id="file-filter" type="search" placeholder="Filter files" aria-label="Filter files">
+          <div id="summary" class="summary"></div>
+          <nav id="file-list" class="file-list" aria-label="Changed files"></nav>
+        </div>
       </aside>
       <div id="sidebar-resizer" class="sidebar-resizer" role="separator" aria-orientation="vertical" aria-label="Resize file list" tabindex="0"></div>
       <section id="content" class="content" aria-live="polite"></section>

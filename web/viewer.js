@@ -43,12 +43,21 @@
     outdatedOpen: false,
     submitting: false,
     submitError: '',
+    fullContext: false,
+    fileNotes: {},
+    versionPick: { from: 'base', to: null },
+    stackMenuOpen: false,
+    versionsMenuOpen: false,
+    inbox: null,
+    openStacks: new Set(readStoredList('ghArcOpenStacks')),
+    closedStacks: new Set(),
   };
 
   const el = {
     content: document.getElementById('content'),
+    sidebarStack: document.getElementById('sidebar-stack'),
+    filesHeading: document.getElementById('files-heading'),
     fileList: document.getElementById('file-list'),
-    summary: document.getElementById('summary'),
     heading: document.getElementById('pr-heading'),
     subheading: document.getElementById('pr-subheading'),
     filter: document.getElementById('file-filter'),
@@ -57,7 +66,9 @@
     commentsToggle: document.getElementById('comments-toggle'),
     reviewJump: document.getElementById('review-jump'),
     stackNav: document.getElementById('stack-nav'),
+    versionsNav: document.getElementById('versions-nav'),
     resizer: document.getElementById('sidebar-resizer'),
+    split: document.getElementById('sidebar-split'),
     toast: document.getElementById('toast'),
   };
 
@@ -75,10 +86,31 @@
     if (params.get('commit')) {
       return { commit: params.get('commit') };
     }
-    if (params.get('from') && params.get('to')) {
-      return { from: params.get('from'), to: params.get('to') };
+    const diff = (params.get('diff') || '').split('..');
+    if (diff.length === 2 && diff[0] && diff[1]) {
+      return { diff: params.get('diff'), from: diff[0], to: diff[1] };
     }
     return null;
+  }
+
+  function rangeQuery() {
+    if (!RANGE) {
+      return '';
+    }
+    return RANGE.commit ? `commit=${encodeURIComponent(RANGE.commit)}` : `diff=${encodeURIComponent(RANGE.diff)}`;
+  }
+
+  function versionsUrl(from, to) {
+    const pr = state.data.pr;
+    if (from === 'base' && to === pr.headRefOid) {
+      return prPath(ROUTE.number);
+    }
+    return `${prPath(ROUTE.number)}?diff=${from}..${to}`;
+  }
+
+  function versionLabel(oid) {
+    const version = state.data.pr.versions.find((item) => item.oid === oid);
+    return version ? `V${version.number}` : String(oid).slice(0, 7);
   }
 
   function prApi(action, query) {
@@ -94,15 +126,19 @@
     setMode(state.mode, true);
     el.content.innerHTML = '<div class="empty">Loading pull request…</div>';
     loadStack();
+    loadInbox();
     try {
       const [data, patch, threads] = await Promise.all([
         api(prApi('pr')),
-        api(prApi('patch', RANGE ? new URLSearchParams(RANGE).toString() : '')),
+        api(prApi('patch', rangeQuery())),
         api(prApi('threads')),
       ]);
       state.data = data;
       state.refs = { oldRef: patch.oldRef, newRef: patch.newRef || data.pr.headRefOid };
+      state.fullContext = Boolean(patch.fullContext);
+      state.fileNotes = patch.notes || {};
       state.files = parsePatch(patch.patch);
+      state.versionPick = initialVersionPick(data.pr);
       applyThreads(threads);
       document.title = `#${data.pr.number} ${data.pr.title}`;
       render();
@@ -119,9 +155,19 @@
       state.stack = { error: err.message };
     }
     renderStackNav();
-    const section = document.getElementById('stack-section');
-    if (section) {
-      section.outerHTML = renderStackSection();
+    if (state.data) {
+      renderSidebar();
+    }
+  }
+
+  async function loadInbox() {
+    try {
+      state.inbox = await api('/api/inbox');
+    } catch (err) {
+      state.inbox = { error: err.message };
+    }
+    if (state.data) {
+      renderSidebar();
     }
   }
 
@@ -213,6 +259,15 @@
     }
   }
 
+  function readStoredList(key) {
+    try {
+      const value = JSON.parse(readPreference(key, '[]'));
+      return Array.isArray(value) ? value : [];
+    } catch (err) {
+      return [];
+    }
+  }
+
   function writePreference(key, value) {
     try {
       window.localStorage.setItem(key, value);
@@ -242,10 +297,17 @@
       }
     });
     bindSidebarResize();
+    bindSidebarSplit();
     el.filter.addEventListener('input', () => {
       state.filter = el.filter.value.trim().toLowerCase();
       renderFileList();
       renderContent();
+    });
+    el.sidebarStack.addEventListener('click', (event) => {
+      const group = event.target.closest('[data-side-group]');
+      if (group) {
+        toggleSideGroup(group.getAttribute('data-side-group'));
+      }
     });
     el.fileList.addEventListener('click', (event) => {
       const button = event.target.closest('[data-folder]');
@@ -259,6 +321,37 @@
         state.collapsedFolders.add(key);
       }
       renderFileList();
+    });
+    el.stackNav.addEventListener('click', (event) => {
+      if (event.target.closest('[data-stack-menu-toggle]')) {
+        setStackMenu(!state.stackMenuOpen);
+      }
+    });
+    el.versionsNav.addEventListener('click', (event) => {
+      if (event.target.closest('[data-versions-menu-toggle]')) {
+        setVersionsMenu(!state.versionsMenuOpen);
+      } else if (event.target.closest('[data-versions-show]')) {
+        window.location.assign(versionsUrl(state.versionPick.from, state.versionPick.to));
+      } else if (event.target.closest('[data-versions-since]')) {
+        window.location.assign(versionsUrl(state.data.pr.lastReviewedOid, state.data.pr.headRefOid));
+      }
+    });
+    el.versionsNav.addEventListener('change', (event) => {
+      if (event.target.matches('[data-version-pick]')) {
+        state.versionPick[event.target.getAttribute('data-version-pick')] = event.target.value;
+        renderVersionsNav();
+      }
+    });
+    document.addEventListener('click', (event) => {
+      if (!event.target.isConnected) {
+        return;
+      }
+      if (state.stackMenuOpen && !el.stackNav.contains(event.target)) {
+        setStackMenu(false, false);
+      }
+      if (state.versionsMenuOpen && !el.versionsNav.contains(event.target)) {
+        setVersionsMenu(false, false);
+      }
     });
     el.content.addEventListener('click', onContentClick);
     el.content.addEventListener('change', onContentChange);
@@ -381,15 +474,14 @@
       setViewed(Number(target.getAttribute('data-viewed')), target.checked);
     } else if (target.matches('[data-range-select]')) {
       const value = target.value;
-      const params = new URLSearchParams();
+      const pr = state.data.pr;
       if (value.startsWith('commit:')) {
-        params.set('commit', value.slice('commit:'.length));
+        window.location.assign(`${prPath(ROUTE.number)}?commit=${value.slice('commit:'.length)}`);
       } else if (value === 'since') {
-        params.set('from', state.data.pr.lastReviewedOid);
-        params.set('to', state.data.pr.headRefOid);
+        window.location.assign(versionsUrl(pr.lastReviewedOid, pr.headRefOid));
+      } else if (value === '') {
+        window.location.assign(prPath(ROUTE.number));
       }
-      const query = params.toString();
-      window.location.assign(`${prPath(ROUTE.number)}${query ? `?${query}` : ''}`);
     }
   }
 
@@ -429,10 +521,30 @@
     if (event.metaKey || event.ctrlKey || event.altKey) {
       return;
     }
+    if (state.versionsMenuOpen && event.key === 'Escape') {
+      event.preventDefault();
+      setVersionsMenu(false);
+      return;
+    }
+    if (state.stackMenuOpen && ['Escape', 'ArrowDown', 'ArrowUp'].includes(event.key)) {
+      event.preventDefault();
+      if (event.key === 'Escape') {
+        setStackMenu(false);
+      } else {
+        stepStackMenu(event.key === 'ArrowDown' ? 1 : -1);
+      }
+      return;
+    }
     if (event.target instanceof Element && event.target.closest('input, textarea, select, [contenteditable]')) {
       return;
     }
-    if (event.key === 'j' || event.key === 'k') {
+    if (event.key === 's') {
+      event.preventDefault();
+      setStackMenu(!state.stackMenuOpen);
+    } else if (event.key === 'v' && state.data && state.data.pr.versions.length) {
+      event.preventDefault();
+      setVersionsMenu(!state.versionsMenuOpen);
+    } else if (event.key === 'j' || event.key === 'k') {
       event.preventDefault();
       stepFile(event.key === 'j' ? 1 : -1);
     } else if (event.key === '[' || event.key === ']') {
@@ -516,6 +628,55 @@
     });
   }
 
+  // The handle between your stacks and the file list; its place is kept as a share of the sidebar.
+  function bindSidebarSplit() {
+    const sidebar = el.split.parentElement;
+    const DEFAULT_SHARE = 0.66;
+    const apply = (share) => {
+      sidebar.style.setProperty('--stacks-share', `${(share * 100).toFixed(1)}%`);
+      el.split.setAttribute('aria-valuenow', String(Math.round(share * 100)));
+    };
+    const save = (share) => {
+      apply(share);
+      writePreference('ghArcStacksShare', String(share));
+    };
+    const shareAt = (clientY) => {
+      const box = sidebar.getBoundingClientRect();
+      const stacks = clamp(clientY - box.top, 80, box.height - 44);
+      return stacks / box.height;
+    };
+    const saved = Number(readPreference('ghArcStacksShare', 0));
+    apply(saved > 0 && saved < 1 ? saved : DEFAULT_SHARE);
+
+    let dragging = false;
+    el.split.addEventListener('pointerdown', (event) => {
+      dragging = true;
+      document.body.classList.add('resizing-split');
+      el.split.setPointerCapture(event.pointerId);
+      event.preventDefault();
+    });
+    el.split.addEventListener('pointermove', (event) => {
+      if (dragging) {
+        save(shareAt(event.clientY));
+      }
+    });
+    const stop = () => {
+      dragging = false;
+      document.body.classList.remove('resizing-split');
+    };
+    el.split.addEventListener('pointerup', stop);
+    el.split.addEventListener('pointercancel', stop);
+    el.split.addEventListener('dblclick', () => save(DEFAULT_SHARE));
+    el.split.addEventListener('keydown', (event) => {
+      if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') {
+        return;
+      }
+      event.preventDefault();
+      const box = el.sidebarStack.getBoundingClientRect();
+      save(shareAt(box.bottom + (event.key === 'ArrowDown' ? 24 : -24)));
+    });
+  }
+
   function setSidebarWidth(width) {
     document.documentElement.style.setProperty('--sidebar-width', `${Math.round(width)}px`);
   }
@@ -529,10 +690,10 @@
   function render() {
     renderHeader();
     renderStackNav();
+    renderVersionsNav();
     updateCommentsToggle();
     updateReviewJump();
-    renderSummary();
-    renderFileList();
+    renderSidebar();
     renderContent();
   }
 
@@ -569,14 +730,68 @@
     const child = stack.children[0];
     el.stackNav.hidden = false;
     el.stackNav.innerHTML = `
-      ${parent
-        ? `<a class="stack-step" href="${prPath(parent)}" title="Down the stack: #${parent} ( [ )">‹ #${parent}</a>`
-        : '<span class="stack-step disabled" title="Bottom of the stack">‹</span>'}
-      <span class="stack-position" title="Position from the bottom of the stack">Stack ${position}/${stack.entries.length}</span>
-      ${child
-        ? `<a class="stack-step" href="${prPath(child)}" title="Up the stack: #${child} ( ] )">#${child} ›</a>`
-        : '<span class="stack-step disabled" title="Top of the stack">›</span>'}
+      <div class="stack-nav-group">
+        ${parent
+          ? `<a class="stack-step" href="${prPath(parent)}" title="Down the stack: #${parent} ( [ )">‹ #${parent}</a>`
+          : '<span class="stack-step disabled" title="Bottom of the stack">‹</span>'}
+        <button type="button" class="stack-position" data-stack-menu-toggle aria-haspopup="menu" aria-expanded="${state.stackMenuOpen}"
+          title="Pick a pull request in this stack (s)">Stack ${position}/${stack.entries.length} <span aria-hidden="true">▾</span></button>
+        ${child
+          ? `<a class="stack-step" href="${prPath(child)}" title="Up the stack: #${child} ( ] )">#${child} ›</a>`
+          : '<span class="stack-step disabled" title="Top of the stack">›</span>'}
+      </div>
+      ${state.stackMenuOpen ? renderStackMenu() : ''}
     `;
+  }
+
+  function renderStackMenu() {
+    const stack = state.stack;
+    const items = stack.entries.slice().reverse().map((entry) => {
+      const current = entry.number === stack.current;
+      return `
+        <a class="stack-menu-item${current ? ' current' : ''}" role="menuitem" href="${prPath(entry.number)}" style="--lane: ${entry.lane}"${current ? ' aria-current="page"' : ''}>
+          <span class="stack-graph" aria-hidden="true"><span class="stack-dot"></span></span>
+          <span class="stack-number">#${entry.number}</span>
+          <span class="stack-title">${escapeHtml(entry.title)}</span>
+          <span class="stack-menu-badges">${entry.state === 'OPEN' ? '' : stateBadge(entry.state)}${decisionChip(entry.reviewDecision)}${checksIcon(entry.checks)}</span>
+        </a>
+      `;
+    }).join('');
+    return `
+      <div class="stack-menu" role="menu" aria-label="Pull requests in this stack">
+        ${items}
+        <div class="stack-menu-item stack-menu-trunk">
+          <span class="stack-graph" aria-hidden="true"><span class="stack-dot"></span></span>
+          <code>${escapeHtml(stack.trunk)}</code>
+        </div>
+      </div>
+    `;
+  }
+
+  function setStackMenu(open, refocus = true) {
+    if (!state.stack || state.stack.error || state.stack.entries.length < 2) {
+      return;
+    }
+    if (open && state.versionsMenuOpen) {
+      setVersionsMenu(false, false);
+    }
+    state.stackMenuOpen = open;
+    renderStackNav();
+    const target = open
+      ? el.stackNav.querySelector('.stack-menu-item.current')
+      : refocus && el.stackNav.querySelector('[data-stack-menu-toggle]');
+    if (target) {
+      target.focus();
+    }
+  }
+
+  function stepStackMenu(direction) {
+    const items = Array.from(el.stackNav.querySelectorAll('a.stack-menu-item'));
+    const index = items.indexOf(document.activeElement);
+    const next = items[Math.max(0, Math.min(items.length - 1, (index === -1 ? 0 : index) + direction))];
+    if (next) {
+      next.focus();
+    }
   }
 
   function renderSummary() {
@@ -586,7 +801,11 @@
     const unresolved = state.threads.filter((thread) => !thread.resolved).length;
     const drafts = state.drafts.threads.length + state.drafts.replies.length;
     const viewed = RANGE ? 0 : state.files.filter(isViewed).length;
-    el.summary.innerHTML = [
+    const node = document.getElementById('summary');
+    if (!node) {
+      return;
+    }
+    node.innerHTML = [
       `${files} file${files === 1 ? '' : 's'} changed, <span class="add">+${add}</span> <span class="del">-${del}</span>`,
       viewed ? `${viewed} of ${files} viewed` : '',
       unresolved ? `${unresolved} unresolved thread${unresolved === 1 ? '' : 's'}` : '',
@@ -649,13 +868,163 @@
 
   // ---------------------------------------------------------------- sidebar
 
-  function renderFileList() {
-    const filtered = getFilteredFiles();
-    if (!filtered.length) {
-      el.fileList.innerHTML = '<div class="muted">No matching files.</div>';
+  // The sidebar's top panel lists the stacks you have open, each a collapsible group drawn top
+  // first over its trunk. The stack on screen comes first and starts open; one you don't own sits
+  // under "Viewing". The bottom panel holds this pull request's files.
+  function renderSidebar() {
+    const groups = sidebarGroups();
+    const current = groups[0];
+    const others = groups.slice(1);
+    let note = '';
+    if (!state.inbox) {
+      note = '<div class="muted side-stack-note">Finding your stacks…</div>';
+    } else if (state.inbox.error) {
+      note = `<div class="muted side-stack-note">Couldn't load your stacks: ${escapeHtml(state.inbox.error)}</div>`;
+    }
+    const heading = (label, count) =>
+      `<div class="side-stack-heading metadata-section-title"><span>${label}</span>${count ? `<span class="section-count">${count}</span>` : ''}</div>`;
+    const yours = current.mine
+      ? heading('Your stacks', groups.length) + groups.map(renderSideGroup).join('')
+      : heading('Viewing') + renderSideGroup(current) + heading('Your stacks', others.length) + others.map(renderSideGroup).join('');
+    el.sidebarStack.innerHTML = yours + note;
+    revealCurrentStackRow();
+    el.filesHeading.innerHTML = `<span>Files in #${ROUTE.number}</span><span class="section-count">${state.files.length}</span>`;
+    renderSummary();
+    renderFileList();
+  }
+
+  // Scrolls the stacks panel, not the page, to keep the pull request on screen in view.
+  function revealCurrentStackRow() {
+    const row = el.sidebarStack.querySelector('.side-stack-row.current');
+    if (!row) {
       return;
     }
-    el.fileList.innerHTML = renderTreeChildren(buildFileTree(filtered), 0);
+    const panel = el.sidebarStack.getBoundingClientRect();
+    const box = row.getBoundingClientRect();
+    if (box.top < panel.top) {
+      el.sidebarStack.scrollTop -= panel.top - box.top + 8;
+    } else if (box.bottom > panel.bottom) {
+      el.sidebarStack.scrollTop += box.bottom - panel.bottom + 8;
+    }
+  }
+
+  function sidebarGroups() {
+    const pr = state.data.pr;
+    const repo = `${ROUTE.owner}/${ROUTE.repo}`;
+    const stack = state.stack && !state.stack.error && state.stack.entries.length ? state.stack : null;
+    const items = stack ? stack.entries.slice().reverse() : [{
+      number: pr.number,
+      title: pr.title,
+      state: pr.state,
+      reviewDecision: pr.reviewDecision,
+      checks: pr.checks ? pr.checks.state : null,
+      lane: 0,
+    }];
+    const numbers = new Set(items.map((item) => item.number));
+    const section = state.inbox && !state.inbox.error
+      ? state.inbox.sections.find((item) => item.key === 'mine')
+      : null;
+    const mine = section ? section.groups : [];
+    const overlaps = (group) => group.repo === repo && group.items.some((item) => numbers.has(item.pr.number));
+    const current = {
+      key: `${repo}#${items[items.length - 1].number}`,
+      repo,
+      trunk: stack ? stack.trunk : pr.baseRefName,
+      items,
+      current: true,
+      mine: pr.author.login === state.data.viewer || mine.some(overlaps),
+    };
+    return [current].concat(mine.filter((group) => !overlaps(group)).map((group) => ({
+      key: `${group.repo}#${group.items[group.items.length - 1].pr.number}`,
+      repo: group.repo,
+      trunk: group.trunk,
+      items: group.items.map((item) => ({ ...item.pr, lane: item.lane })),
+      current: false,
+      mine: true,
+    })));
+  }
+
+  function isStackOpen(group) {
+    return group.current ? !state.closedStacks.has(group.key) : state.openStacks.has(group.key);
+  }
+
+  function renderSideGroup(group) {
+    if (group.items.length === 1 && !group.current) {
+      return `<div class="side-group single">${renderSideStackRow(group, group.items[0], true)}</div>`;
+    }
+    const open = isStackOpen(group);
+    const bottom = group.items[group.items.length - 1];
+    const repoName = group.repo === `${ROUTE.owner}/${ROUTE.repo}` ? '' : `<span class="side-group-repo">${escapeHtml(group.repo.split('/')[1])}</span>`;
+    const rows = open
+      ? group.items.map((item, index) => renderSideStackRow(group, item, index === 0)).join('') + `
+        <div class="side-stack-row side-stack-trunk">
+          <span class="stack-graph" aria-hidden="true"><span class="stack-dot"></span></span>
+          <code>${escapeHtml(group.trunk)}</code>
+        </div>`
+      : '';
+    return `
+      <div class="side-group${group.current ? ' current' : ''}${open ? '' : ' collapsed'}">
+        <button type="button" class="side-group-head" data-side-group="${escapeAttr(group.key)}" aria-expanded="${open}"
+          title="${escapeAttr(`Stack of ${group.items.length}, starting at #${bottom.number} ${bottom.title}`)}">
+          <span class="side-group-label">${escapeHtml(bottom.title)}</span>
+          ${repoName}
+          <span class="side-group-count">${group.items.length}</span>
+        </button>
+        ${rows}
+      </div>
+    `;
+  }
+
+  function renderSideStackRow(group, entry, first) {
+    const current = group.current && entry.number === ROUTE.number;
+    const classes = `side-stack-row${current ? ' current' : ''}${first ? ' is-first' : ''}`;
+    const title = `#${entry.number} ${entry.title}`;
+    const body = `
+      <span class="stack-graph" aria-hidden="true"><span class="stack-dot"></span></span>
+      <span class="side-stack-number">#${entry.number}</span>
+      <span class="side-stack-title">${escapeHtml(entry.title)}</span>
+      <span class="side-stack-marks">${entry.state === 'OPEN' ? '' : stateBadge(entry.state)}${decisionMark(entry.reviewDecision)}${checksIcon(entry.checks)}</span>
+    `;
+    if (!current) {
+      return `<a class="${classes}" href="/${escapeAttr(group.repo)}/pull/${entry.number}" style="--lane: ${entry.lane}" title="${escapeAttr(title)}">${body}</a>`;
+    }
+    return `<div class="${classes}" style="--lane: ${entry.lane}" aria-current="page" title="${escapeAttr(title)}">${body}</div>`;
+  }
+
+  function toggleSideGroup(key) {
+    const group = sidebarGroups().find((item) => item.key === key);
+    if (!group) {
+      return;
+    }
+    const set = group.current ? state.closedStacks : state.openStacks;
+    if (set.has(key)) {
+      set.delete(key);
+    } else {
+      set.add(key);
+    }
+    writePreference('ghArcOpenStacks', JSON.stringify(Array.from(state.openStacks)));
+    renderSidebar();
+  }
+
+  function decisionMark(decision) {
+    if (decision === 'APPROVED') {
+      return '<span class="decision-mark approved" title="Accepted">✓</span>';
+    }
+    if (decision === 'CHANGES_REQUESTED') {
+      return '<span class="decision-mark changes" title="Changes requested">✕</span>';
+    }
+    return '';
+  }
+
+  function renderFileList() {
+    const node = document.getElementById('file-list');
+    if (!node) {
+      return;
+    }
+    const filtered = getFilteredFiles();
+    node.innerHTML = filtered.length
+      ? renderTreeChildren(buildFileTree(filtered), 0)
+      : '<div class="muted">No matching files.</div>';
   }
 
   function buildFileTree(files) {
@@ -760,11 +1129,21 @@
     const files = getFilteredFiles();
     const ordered = files.length ? flattenFileTree(buildFileTree(files)) : [];
     el.content.innerHTML = renderDetails() +
-      (ordered.length ? ordered.map(renderFile).join('') : '<div class="empty">No changes to show.</div>') +
+      (ordered.length ? ordered.map(renderFile).join('') : renderNoChanges()) +
       renderReviewPanel();
     prepareLinks(el.content);
     restoreComposers(saved);
     applyActiveHighlight();
+  }
+
+  function renderNoChanges() {
+    if (state.filter) {
+      return '<div class="empty">No files match the filter.</div>';
+    }
+    if (RANGE && RANGE.diff && RANGE.from !== 'base') {
+      return `<div class="empty">${escapeHtml(versionLabel(RANGE.from))} and ${escapeHtml(versionLabel(RANGE.to))} differ only by what was merged in from the base.</div>`;
+    }
+    return '<div class="empty">No changes to show.</div>';
   }
 
   function rerenderFile(file) {
@@ -867,7 +1246,6 @@
             ${pr.labels.length ? property('Labels', pr.labels.map(renderLabel).join(' ')) : ''}
             ${property('Changes', renderChangesPicker(pr))}
           </dl>
-          ${renderStackSection()}
           ${renderSummarySection(pr)}
           ${renderActivity(pr)}
           ${renderOutdated()}
@@ -960,14 +1338,15 @@
     if (RANGE && RANGE.commit) {
       current = `commit:${RANGE.commit}`;
     } else if (RANGE) {
-      current = RANGE.from === pr.lastReviewedOid && RANGE.to === pr.headRefOid ? 'since' : 'custom';
+      current = RANGE.from === pr.lastReviewedOid && RANGE.to === pr.headRefOid ? 'since' : 'versions';
     }
     const options = ['<option value="">All changes</option>'];
     if (pr.lastReviewedOid && pr.lastReviewedOid !== pr.headRefOid) {
-      options.push(`<option value="since">Since your last review (${escapeHtml(pr.lastReviewedOid.slice(0, 7))})</option>`);
+      options.push(`<option value="since">Since your last review (${escapeHtml(versionLabel(pr.lastReviewedOid))})</option>`);
     }
-    if (current === 'custom') {
-      options.push(`<option value="custom">${escapeHtml(RANGE.from.slice(0, 7))}…${escapeHtml(RANGE.to.slice(0, 7))}</option>`);
+    if (current === 'versions') {
+      const from = RANGE.from === 'base' ? 'base' : versionLabel(RANGE.from);
+      options.push(`<option value="versions">${escapeHtml(from)} → ${escapeHtml(versionLabel(RANGE.to))}</option>`);
     }
     const commits = pr.commits.slice().reverse();
     if (commits.length) {
@@ -986,78 +1365,171 @@
       return '';
     }
     const pr = state.data.pr;
+    const version = (oid) => `${escapeHtml(versionLabel(oid))} (<code>${escapeHtml(oid.slice(0, 7))}</code>)`;
     let label;
+    let note = '';
     if (RANGE.commit) {
       const commit = pr.commits.find((item) => item.oid === RANGE.commit);
       label = `the changes in commit <code>${escapeHtml(RANGE.commit.slice(0, 7))}</code>${commit ? ` · ${escapeHtml(commit.headline)}` : ''}`;
-    } else if (RANGE.from === pr.lastReviewedOid) {
-      label = `the changes since your last review (<code>${escapeHtml(RANGE.from.slice(0, 7))}</code> → <code>${escapeHtml(RANGE.to.slice(0, 7))}</code>)`;
+    } else if (RANGE.from === 'base') {
+      label = `the pull request as of ${version(RANGE.to)}, against its base`;
     } else {
-      label = `<code>${escapeHtml(RANGE.from.slice(0, 7))}</code> → <code>${escapeHtml(RANGE.to.slice(0, 7))}</code>`;
+      const since = RANGE.from === pr.lastReviewedOid ? ', since your last review' : '';
+      label = `what changed from ${version(RANGE.from)} to ${version(RANGE.to)}${since}`;
+      const mixed = Object.values(state.fileNotes).filter((value) => value === 'mixed').length;
+      note = ' Changes merged in from the base in between are left out' +
+        (mixed ? `, except in ${mixed} file${mixed === 1 ? '' : 's'} where they touch the same lines.` : '.');
     }
-    const mergedIn = !RANGE.commit && rangeHasMerge(pr) ? ' It includes everything merged in from the base branch.' : '';
     const commenting = headView()
-      ? 'You can comment on the right side.'
-      : 'Comments are read-only in this view.';
+      ? ' You can comment on the right side.'
+      : ' Comments are read-only in this view.';
     return `
       <div class="range-banner">
-        Showing ${label}. ${commenting}${mergedIn}
+        Showing ${label}.${note}${commenting}
         <a href="${prPath(ROUTE.number)}">Back to all changes</a>
       </div>
     `;
   }
 
-  function rangeHasMerge(pr) {
-    const start = pr.commits.findIndex((commit) => commit.oid === RANGE.from);
-    return start !== -1 && pr.commits.slice(start + 1).some((commit) => commit.isMerge);
+  function initialVersionPick(pr) {
+    if (RANGE && RANGE.diff) {
+      return { from: RANGE.from, to: RANGE.to };
+    }
+    return { from: 'base', to: pr.headRefOid };
   }
 
-  function renderStackSection() {
-    const stack = state.stack;
-    const heading = (extra) => `
-      <div class="metadata-section-heading">
-        <div class="metadata-section-title"><span>Stack</span>${extra || ''}</div>
-      </div>`;
-    if (!stack) {
-      return `<div class="metadata-section" id="stack-section">${heading()}<div class="muted stack-note">Finding the stack…</div></div>`;
+  function viewLabel() {
+    const pr = state.data.pr;
+    if (RANGE && RANGE.commit) {
+      return `Commit ${RANGE.commit.slice(0, 7)}`;
     }
-    if (stack.error) {
-      return `<div class="metadata-section" id="stack-section">${heading()}<div class="muted stack-note">Couldn't load the stack: ${escapeHtml(stack.error)}</div></div>`;
+    if (RANGE) {
+      return `${RANGE.from === 'base' ? 'Base' : versionLabel(RANGE.from)} → ${versionLabel(RANGE.to)}`;
     }
-    if (stack.entries.length < 2) {
-      return '<div id="stack-section" hidden></div>';
+    return `Base → ${pr.versions.length ? `V${pr.versions.length}` : 'head'}`;
+  }
+
+  // The top-bar button names the changes on screen and opens the version picker.
+  function renderVersionsNav() {
+    const pr = state.data && state.data.pr;
+    if (!pr || !pr.versions.length) {
+      el.versionsNav.hidden = true;
+      return;
     }
-    const position = stack.entries.findIndex((entry) => entry.number === stack.current) + 1;
-    return `
-      <div class="metadata-section" id="stack-section">
-        ${heading(`<span class="section-count">${position} of ${stack.entries.length} from the bottom</span>`)}
-        <ol class="stack-list">
-          ${stack.entries.slice().reverse().map(renderStackRow).join('')}
-          <li class="stack-row stack-trunk">
-            <span class="stack-graph" aria-hidden="true"><span class="stack-dot"></span></span>
-            <code>${escapeHtml(stack.trunk)}</code>
-          </li>
-        </ol>
-      </div>
+    const wrap = el.versionsNav.querySelector('.versions-wrap');
+    const scrollTop = wrap ? wrap.scrollTop : null;
+    const focused = el.versionsNav.contains(document.activeElement) && document.activeElement.matches('[data-version-pick]')
+      ? `[data-version-pick="${document.activeElement.getAttribute('data-version-pick')}"][value="${CSS.escape(document.activeElement.value)}"]`
+      : null;
+    el.versionsNav.hidden = false;
+    el.versionsNav.innerHTML = `
+      <button type="button" class="versions-toggle${RANGE ? ' is-range' : ''}" data-versions-menu-toggle aria-haspopup="dialog"
+        aria-expanded="${state.versionsMenuOpen}" title="Compare versions of this pull request (v)">
+        <span class="versions-toggle-caption">Versions</span>
+        <span class="versions-toggle-label">${escapeHtml(viewLabel())}</span>
+        <span aria-hidden="true">▾</span>
+      </button>
+      ${state.versionsMenuOpen ? `<div class="versions-menu" role="dialog" aria-label="Compare versions">${renderVersionsPicker()}</div>` : ''}
     `;
+    const fresh = el.versionsNav.querySelector('.versions-wrap');
+    if (fresh && scrollTop !== null) {
+      fresh.scrollTop = scrollTop;
+    }
+    const refocus = focused && el.versionsNav.querySelector(focused);
+    if (refocus) {
+      refocus.focus();
+    }
   }
 
-  function renderStackRow(entry) {
-    const current = entry.number === state.stack.current;
-    const title = current
-      ? `<span class="stack-title">${escapeHtml(entry.title)}</span>`
-      : `<a class="stack-title" href="${prPath(entry.number)}">${escapeHtml(entry.title)}</a>`;
+  function setVersionsMenu(open, refocus = true) {
+    if (open && state.stackMenuOpen) {
+      setStackMenu(false, false);
+    }
+    state.versionsMenuOpen = open;
+    renderVersionsNav();
+    if (open) {
+      revealVersionPick();
+      const checked = el.versionsNav.querySelector('[data-version-pick="to"]:checked');
+      if (checked) {
+        checked.focus();
+      }
+    } else if (refocus) {
+      el.versionsNav.querySelector('[data-versions-menu-toggle]').focus();
+    }
+  }
+
+  // The newest versions sit at the bottom of a scrolling table; bring the picked one into view.
+  function revealVersionPick() {
+    const wrap = el.versionsNav.querySelector('.versions-wrap');
+    const row = wrap && wrap.querySelector('tr.is-to');
+    if (!row) {
+      return;
+    }
+    const overflow = row.getBoundingClientRect().bottom - wrap.getBoundingClientRect().bottom;
+    if (overflow > 0) {
+      wrap.scrollTop += overflow + 4;
+    }
+  }
+
+  // Phabricator's update history: pick an old and a new version and compare them.
+  function renderVersionsPicker() {
+    const pr = state.data.pr;
+    const versions = pr.versions;
+    const pick = state.versionPick;
+    const order = (oid) => (oid === 'base' ? 0 : versions.findIndex((item) => item.oid === oid) + 1);
+    const fromOrder = order(pick.from);
+    const toOrder = order(pick.to);
+    const shown = RANGE && RANGE.diff ? `${RANGE.from}..${RANGE.to}` : `base..${pr.headRefOid}`;
+    const picked = `${pick.from}..${pick.to}`;
+    const radio = (name, value, rowOrder) => {
+      const disabled = name === 'from' ? rowOrder >= toOrder : rowOrder <= fromOrder;
+      const checked = name === 'from' ? pick.from === value : pick.to === value;
+      return `<input type="radio" name="version-${name}" value="${escapeAttr(value)}" data-version-pick="${name}"
+        aria-label="${name === 'from' ? 'Old' : 'New'}"${checked ? ' checked' : ''}${disabled && !checked ? ' disabled' : ''}>`;
+    };
+    const rows = versions.map((version, index) => {
+      const badges = [
+        index === versions.length - 1 ? '<span class="pill">latest</span>' : '',
+        version.forcePushed ? '<span class="pill" title="Replaced by a force push">force-pushed</span>' : '',
+        version.reviewedByYou ? '<span class="pill pill-reviewed">you reviewed</span>' : '',
+      ].join('');
+      return `
+        <tr class="${order(version.oid) === fromOrder ? 'is-from' : ''}${order(version.oid) === toOrder ? ' is-to' : ''}">
+          <td class="version-radio">${radio('from', version.oid, index + 1)}</td>
+          <td class="version-radio">${radio('to', version.oid, index + 1)}</td>
+          <td class="version-name">V${version.number}${badges}</td>
+          <td><a class="version-commit" href="https://github.com/${ROUTE.owner}/${ROUTE.repo}/commit/${escapeAttr(version.oid)}" target="_blank" rel="noreferrer noopener">${escapeHtml(version.short)}</a></td>
+          <td class="version-date">${time(version.date)}</td>
+          <td class="version-headline" title="${escapeAttr(version.headline)}">${version.isMerge ? '<span class="pill">merge</span>' : ''}${escapeHtml(version.headline)}</td>
+        </tr>
+      `;
+    }).join('');
+    const since = pr.lastReviewedOid && pr.lastReviewedOid !== pr.headRefOid
+      ? `<button type="button" data-versions-since>Since your last review (${escapeHtml(versionLabel(pr.lastReviewedOid))} → V${versions.length})</button>`
+      : '';
     return `
-      <li class="stack-row${current ? ' current' : ''}" style="--lane: ${entry.lane}">
-        <span class="stack-graph" aria-hidden="true"><span class="stack-dot"></span></span>
-        <a class="stack-number" href="${prPath(entry.number)}"${current ? ' aria-current="page"' : ''}>#${entry.number}</a>
-        ${title}
-        ${entry.state === 'OPEN' ? '' : stateBadge(entry.state)}
-        <span class="stack-author">${avatar(entry.author, 16)}${escapeHtml(entry.author.login)}</span>
-        <span class="stack-decision">${decisionChip(entry.reviewDecision)}</span>
-        <span class="stack-checks">${checksIcon(entry.checks)}</span>
-        <span class="stat"><span class="add">+${entry.additions}</span> <span class="del">-${entry.deletions}</span></span>
-      </li>
+        <div class="versions-menu-head">
+          <div class="metadata-section-title"><span>Versions</span><span class="section-count">${versions.length}, one per push</span></div>
+          ${since}
+        </div>
+        <div class="versions-wrap">
+          <table class="versions-table">
+            <thead><tr><th>Old</th><th>New</th><th>Version</th><th>Commit</th><th>Pushed</th><th>Last commit</th></tr></thead>
+            <tbody>
+              <tr class="${fromOrder === 0 ? 'is-from' : ''}">
+                <td class="version-radio">${radio('from', 'base', 0)}</td>
+                <td class="version-radio"></td>
+                <td class="version-name">Base</td>
+                <td colspan="3" class="muted">The base branch, <code>${escapeHtml(pr.baseRefName)}</code></td>
+              </tr>
+              ${rows}
+            </tbody>
+          </table>
+        </div>
+        <div class="versions-actions">
+          <button type="button" class="primary-action" data-versions-show${picked === shown ? ' disabled' : ''}>Compare ${escapeHtml(pick.from === 'base' ? 'Base' : versionLabel(pick.from))} → ${escapeHtml(versionLabel(pick.to))}</button>
+          <span class="muted">Comparing two versions leaves out what was merged in from the base between them.</span>
+        </div>
     `;
   }
 
@@ -1197,7 +1669,7 @@
               ${state.submitting ? 'Submitting…' : 'Submit review'}
             </button>
           </div>
-          <div class="muted review-hint">⌘/Ctrl+Enter saves or submits · j/k next and previous file · [ and ] down and up the stack</div>
+          <div class="muted review-hint">⌘/Ctrl+Enter saves or submits · j/k next and previous file · [ and ] down and up the stack · s picks from the stack · v compares versions</div>
         </div>
       </section>
     `;
@@ -1300,6 +1772,13 @@
   }
 
   function fileStatusLabel(file) {
+    const note = state.fileNotes[file.newPath || file.oldPath];
+    if (note === 'mixed') {
+      return '<span class="file-status mixed" title="Base changes merged in between the versions touch the same lines as this pull request, so they are shown here too">Includes base changes</span>';
+    }
+    if (note === 'rebased') {
+      return '<span class="file-status rebased" title="Base changes merged in between the versions are left out of this file">Base changes left out</span>';
+    }
     if (!file.oldPath) {
       return '<span class="file-status added">Added</span>';
     }
@@ -1977,7 +2456,7 @@
   }
 
   function decorateDeltaContextControls(file, hunk, rows) {
-    if (file.binary) {
+    if (file.binary || state.fullContext) {
       return rows;
     }
     const groups = deltaRegions(rows);

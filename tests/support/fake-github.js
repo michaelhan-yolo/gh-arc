@@ -11,21 +11,48 @@ const BASE_OID = 'a'.repeat(40);
 const MERGE_BASE_OID = 'b'.repeat(40);
 const HEAD_OID = 'c'.repeat(40);
 const LAST_REVIEWED_OID = 'd'.repeat(40);
+const FORCED_OID = 'e'.repeat(40);
+const OLD_MERGE_BASE_OID = '1'.repeat(40);
+const WIP_OID = '9'.repeat(40);
 
-function appLines(version) {
+// Versions of pull request 2: V1 (force-pushed away) and V2 sit on an older base whose v25 is 0;
+// the base then moved (v25 = 25) and was merged in before V3, the head.
+function appText(overrides, extra) {
   const lines = [];
   for (let ii = 1; ii <= 30; ii++) {
-    lines.push(version === 'head' && ii === 10 ? 'const v10 = 100;' : `const v${ii} = ${ii};`);
-    if (version === 'head' && ii === 20) {
+    lines.push(overrides[ii] || `const v${ii} = ${ii};`);
+    if (extra && ii === 20) {
       lines.push('const extra = true;');
     }
   }
-  return lines;
+  return `${lines.join('\n')}\n`;
 }
 
+const OLD_DOC = '# Title\nold body\nend\n';
+
 const CONTENT = {
-  [`${MERGE_BASE_OID}:src/app.js`]: `${appLines('base').join('\n')}\n`,
-  [`${HEAD_OID}:src/app.js`]: `${appLines('head').join('\n')}\n`,
+  [`${MERGE_BASE_OID}:src/app.js`]: appText({}),
+  [`${HEAD_OID}:src/app.js`]: appText({ 10: 'const v10 = 100;' }, true),
+  [`${OLD_MERGE_BASE_OID}:src/app.js`]: appText({ 25: 'const v25 = 0;' }),
+  [`${LAST_REVIEWED_OID}:src/app.js`]: appText({ 10: 'const v10 = 99;', 25: 'const v25 = 0;' }),
+  [`${FORCED_OID}:src/app.js`]: appText({ 10: 'const v10 = 50;', 25: 'const v25 = 0;' }),
+  [`${MERGE_BASE_OID}:docs/old.md`]: OLD_DOC,
+  [`${OLD_MERGE_BASE_OID}:docs/old.md`]: OLD_DOC,
+  [`${LAST_REVIEWED_OID}:docs/old.md`]: OLD_DOC,
+  [`${FORCED_OID}:docs/old.md`]: OLD_DOC,
+  [`${HEAD_OID}:docs/new.md`]: '# Title\nnew body\nend\n',
+};
+
+const COMPARES = {
+  [HEAD_OID]: {
+    mergeBase: MERGE_BASE_OID,
+    files: [
+      { filename: 'src/app.js', status: 'modified', sha: 'blob-head-app' },
+      { filename: 'docs/new.md', previous_filename: 'docs/old.md', status: 'renamed', sha: 'blob-head-doc' },
+    ],
+  },
+  [LAST_REVIEWED_OID]: { mergeBase: OLD_MERGE_BASE_OID, files: [{ filename: 'src/app.js', status: 'modified', sha: 'blob-v2-app' }] },
+  [FORCED_OID]: { mergeBase: OLD_MERGE_BASE_OID, files: [{ filename: 'src/app.js', status: 'modified', sha: 'blob-v1-app' }] },
 };
 
 const PR2_DIFF = [
@@ -138,6 +165,13 @@ const STACK = [
   { number: 9, title: 'Unrelated cleanup', baseRefName: 'main', headRefName: 'cleanup' },
 ];
 
+// The viewer's own pull requests: a two-pull-request stack and one on its own.
+const MINE = [
+  { number: 20, title: 'Widget docs', baseRefName: 'main', headRefName: 'docs-a' },
+  { number: 21, title: 'Widget docs examples', baseRefName: 'docs-a', headRefName: 'docs-b' },
+  { number: 30, title: 'Fix a typo', baseRefName: 'main', headRefName: 'typo' },
+];
+
 function summary(pr) {
   return {
     id: `PR_${pr.number}`,
@@ -149,6 +183,8 @@ function summary(pr) {
     merged: false,
     baseRefName: pr.baseRefName,
     headRefName: pr.headRefName,
+    baseRefOid: BASE_OID,
+    headRefOid: pr.number === 2 ? HEAD_OID : String(pr.number).repeat(40).slice(0, 40),
     additions: 3,
     deletions: 2,
     reviewDecision: 'REVIEW_REQUIRED',
@@ -206,11 +242,19 @@ function pullRequest(state) {
       }],
     },
     commits: {
-      totalCount: 2,
+      totalCount: 3,
       nodes: [
-        { commit: { oid: LAST_REVIEWED_OID, abbreviatedOid: 'ddddddd', messageHeadline: 'Render widgets', committedDate: '2026-10-01T09:00:00Z', parents: { totalCount: 1 }, author: { name: 'Dana', user: actor('dana') } } },
-        { commit: { oid: HEAD_OID, abbreviatedOid: 'ccccccc', messageHeadline: 'Use 100 for v10', committedDate: '2026-10-02T09:00:00Z', parents: { totalCount: 1 }, author: { name: 'Dana', user: actor('dana') } } },
+        { commit: { oid: LAST_REVIEWED_OID, abbreviatedOid: 'ddddddd', messageHeadline: 'Render widgets', committedDate: '2026-10-01T09:00:00Z', parents: { totalCount: 1 }, checkSuites: { totalCount: 3 }, author: { name: 'Dana', user: actor('dana') } } },
+        { commit: { oid: WIP_OID, abbreviatedOid: '9999999', messageHeadline: 'Merge main into feat-b', committedDate: '2026-10-02T08:00:00Z', parents: { totalCount: 2 }, checkSuites: { totalCount: 0 }, author: { name: 'Dana', user: actor('dana') } } },
+        { commit: { oid: HEAD_OID, abbreviatedOid: 'ccccccc', messageHeadline: 'Use 100 for v10', committedDate: '2026-10-02T09:00:00Z', parents: { totalCount: 1 }, checkSuites: { totalCount: 3 }, author: { name: 'Dana', user: actor('dana') } } },
       ],
+    },
+    forcePushes: {
+      nodes: [{
+        createdAt: '2026-10-01T08:30:00Z',
+        beforeCommit: { oid: FORCED_OID, abbreviatedOid: 'eeeeeee', messageHeadline: 'Render widgets (first try)', committedDate: '2026-10-01T08:00:00Z', parents: { totalCount: 1 } },
+        afterCommit: { oid: LAST_REVIEWED_OID },
+      }],
     },
     lastCommit: {
       nodes: [{
@@ -290,7 +334,7 @@ function graphql(state, query, variables) {
     return {
       viewer: { login: state.viewer },
       needsReview: { nodes: STACK.slice(0, 3).map(summary) },
-      mine: { nodes: [] },
+      mine: { nodes: MINE.map(summary) },
       reviewed: { nodes: [summary(STACK[3])] },
     };
   }
@@ -357,7 +401,13 @@ function rest(state, method, pathname, search, accept) {
     if (accept.includes('diff')) {
       return { type: 'text/plain', body: PR2_DIFF.split('diff --git a/docs')[0] };
     }
-    return { json: { merge_base_commit: { sha: compare[1] === BASE_OID ? MERGE_BASE_OID : compare[1] } } };
+    const known = compare[1] === BASE_OID && COMPARES[compare[2]];
+    return {
+      json: {
+        merge_base_commit: { sha: known ? known.mergeBase : compare[1] },
+        files: known ? known.files : [],
+      },
+    };
   }
   const commit = pathname.match(new RegExp(`^${prefix}/commits/([0-9a-f]+)$`));
   if (commit) {
@@ -414,9 +464,11 @@ function startFakeGitHub(port = 0) {
 
 module.exports = {
   BASE_OID,
+  FORCED_OID,
   HEAD_OID,
   LAST_REVIEWED_OID,
   MERGE_BASE_OID,
+  OLD_MERGE_BASE_OID,
   OWNER,
   REPO,
   startFakeGitHub,

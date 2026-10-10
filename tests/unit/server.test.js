@@ -120,6 +120,34 @@ test('context reads the old side at the merge base and the new side at head', as
   assert.deepEqual(body.new, [{ line: 21, text: 'const extra = true;' }, { line: 22, text: 'const v21 = 21;' }]);
 });
 
+test('versions are pushed heads, including one force-pushed away, in the order they were the head', async () => {
+  const { body } = await get(prApi('pr'));
+  assert.deepEqual(body.pr.versions.map((version) => [version.number, version.oid, version.forcePushed, version.reviewedByYou]), [
+    [1, fake.FORCED_OID, true, false],
+    [2, fake.LAST_REVIEWED_OID, false, true],
+    [3, fake.HEAD_OID, false, false],
+  ]);
+});
+
+test('comparing two versions leaves out what the base gained in between', async () => {
+  const { status, body } = await get(prApi('patch', `diff=${fake.LAST_REVIEWED_OID}..${fake.HEAD_OID}`));
+  assert.equal(status, 200);
+  assert.equal(body.fullContext, true);
+  assert.equal(body.newRef, fake.HEAD_OID);
+  assert.deepEqual(body.notes, { 'src/app.js': 'rebased' });
+  assert.match(body.patch, /-const v10 = 99;\n\+const v10 = 100;\n/);
+  assert.match(body.patch, /\+const extra = true;\n/);
+  assert.doesNotMatch(body.patch, /^[-+]const v25/m);
+  assert.match(body.patch, /rename from docs\/old\.md\nrename to docs\/new\.md\n[\s\S]*-old body\n\+new body\n/);
+});
+
+test('a version against the base shows the pull request as it was then', async () => {
+  const { body } = await get(prApi('patch', `diff=base..${fake.LAST_REVIEWED_OID}`));
+  assert.equal(body.oldRef, fake.OLD_MERGE_BASE_OID);
+  assert.equal(body.newRef, fake.LAST_REVIEWED_OID);
+  assert.equal((await get(prApi('patch', 'diff=nope..also-nope'))).status, 400);
+});
+
 test('a single commit view compares against its parent', async () => {
   const { body } = await get(prApi('patch', `commit=${fake.HEAD_OID}`));
   assert.equal(body.oldRef, fake.MERGE_BASE_OID);
@@ -193,6 +221,8 @@ test('inbox groups a review queue into stacks, top first', async () => {
   assert.equal(needsReview.groups.length, 1);
   assert.equal(needsReview.groups[0].trunk, 'main');
   assert.deepEqual(needsReview.groups[0].items.map((item) => item.pr.number), [3, 2, 1]);
+  const mine = body.sections.find((section) => section.key === 'mine');
+  assert.deepEqual(mine.groups.map((group) => group.items.map((item) => item.pr.number)).sort(), [[21, 20], [30]]);
 });
 
 test('an unknown pull request is a 404', async () => {

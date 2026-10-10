@@ -35,8 +35,10 @@ One server on `127.0.0.1:7799` serves every pull request, and running `gh arc` a
 
 ## What you get
 
-- **Side by side or unified diffs**, with intraline highlights, a file tree, a filter, and context that expands 20 lines at a time from the merge base and head.
-- **The stack**: pull requests chained by base branch, drawn as a graph from the top of the stack down to the trunk, with each one's review state, checks and size. `‹ #n Stack 2/7 #m ›` in the top bar, or `[` and `]`, move down and up.
+- **Your stacks in the sidebar**: every open pull request of yours, grouped into stacks and drawn top first over the trunk; the stack on screen opens first, and one you're only viewing sits above them. The file list for the pull request on screen sits below, behind a handle you can drag (double-click resets it).
+- **Side by side or unified diffs**, with intraline highlights, a file filter, and context that expands 20 lines at a time from the merge base and head.
+- **The stack**: pull requests chained by base branch, drawn as a graph from the top of the stack down to the trunk, with each one's review state, checks and size. In the top bar, `‹ #n` and `#m ›` (or `[` and `]`) move down and up, and the `Stack 2/7` button (or `s`) opens the whole stack to jump to any pull request in it.
+- **Versions**, Phabricator's update history: one version per push, including heads a force push replaced. The `Versions · Base → V9` button in the top bar (or `v`) opens them; pick an old and a new version to see what changed between them. The comparison replays the old version's changes onto the new version's base, so a lower pull request merged up the stack in between drops out. Where base changes and the pull request touch the same lines, the file says so and shows both.
 - **Existing threads inline**, with resolve, unresolve and reply. Resolved threads start collapsed; outdated ones sit under the details with the hunk they were left on.
 - **Phabricator-style review**: inline comments and replies stay drafts (saved in `~/.gh-arc/drafts`, so they survive a reload) until you submit them in one review as Comment, Accept or Request changes. A pending review you started on github.com goes out with it.
 - **Viewed files** sync with GitHub's checkbox and collapse. Lock files, generated files and diffs over 1,500 lines start collapsed.
@@ -45,11 +47,13 @@ One server on `127.0.0.1:7799` serves every pull request, and running `gh arc` a
 - **Inbox**: needs your review, your pull requests, and the ones you've reviewed, grouped into stacks.
 - Light and dark themes follow the system.
 
-Keys: `j` and `k` step through files, `[` and `]` walk the stack, and ⌘/Ctrl+Enter saves a comment or submits the review.
+Keys: `j` and `k` step through files, `[` and `]` walk the stack, `s` opens the stack menu, `v` the versions, and ⌘/Ctrl+Enter saves a comment or submits the review.
 
 ## How it works
 
 `gh arc` starts a Node server on 127.0.0.1. The server reads your token once from `gh auth token` and calls GitHub's GraphQL and REST APIs; the token never reaches the page. Diffs come from the pull request diff endpoint, which falls back to the files API past GitHub's size limit. The stack comes from your repository's open pull requests, cached for a minute.
+
+GitHub keeps no log of pushes, but CI checks run only on the commit at the tip of each push, so commits with check suites mark the versions; force-pushed-away heads come from the pull request's timeline. A comparison between versions A and B fetches each changed file at A, B and both versions' merge bases, merges A's changes onto B's base, and diffs that against B.
 
 Submitting a review gets or creates your pending review on GitHub, adds each draft as a thread or reply, and then submits it with the action you chose. If GitHub rejects a draft (a line outside the diff, say), the draft stays local with the error, the rest wait in the pending review, and nothing is submitted until you resubmit.
 
