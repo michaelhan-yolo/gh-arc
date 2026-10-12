@@ -9,7 +9,7 @@
   const LARGE_FILE_LINES = 1500;
   const GENERATED_RE = /(^|\/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Cargo\.lock|poetry\.lock|Gemfile\.lock|go\.sum|uv\.lock)$|\.min\.(js|css)$|(^|\/)(__generated__|generated)\/|\.snap$/;
   const HUNK_RE = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/;
-  const ACTIVITY_VISIBLE = 6;
+  const ACTIVITY_VISIBLE = 12;
   const LONG_SUMMARY_CHARS = 2500;
   // The pull request on screen. Links between pull requests switch it in place (see navigate),
   // so these change without a page load.
@@ -52,6 +52,7 @@
       showAllActivity: false,
       summaryExpanded: false,
       outdatedOpen: false,
+      botsOpen: false,
       submitting: false,
       submitError: '',
       fullContext: false,
@@ -478,6 +479,8 @@
     el.content.addEventListener('toggle', (event) => {
       if (event.target.matches('[data-outdated-details]')) {
         state.outdatedOpen = event.target.open;
+      } else if (event.target.matches('[data-bot-details]')) {
+        state.botsOpen = event.target.open;
       }
     }, true);
     el.content.addEventListener('pointerdown', (event) => {
@@ -577,6 +580,10 @@
     } else if ((node = match('[data-jump-comment]'))) {
       event.preventDefault();
       jumpToComment(node.getAttribute('data-jump-comment'));
+    } else if (match('[data-show-bots]')) {
+      state.botsOpen = true;
+      renderContent();
+      document.getElementById('bot-comments').scrollIntoView({ block: 'start' });
     } else if (match('[data-activity-more]')) {
       state.showAllActivity = true;
       renderContent();
@@ -1467,6 +1474,7 @@
     const ordered = files.length ? flattenFileTree(buildFileTree(files)) : [];
     el.content.innerHTML = renderDetails() +
       (ordered.length ? ordered.map(renderFile).join('') : renderNoChanges()) +
+      renderBotComments() +
       renderReviewPanel();
     prepareLinks(el.content);
     restoreComposers(saved);
@@ -1584,7 +1592,7 @@
             ${property('Changes', renderChangesPicker(pr))}
           </dl>
           ${renderSummarySection(pr)}
-          ${renderActivity(pr)}
+          ${renderDiscussion(pr)}
           ${renderOutdated()}
         </div>
       </section>
@@ -1895,20 +1903,79 @@
     `;
   }
 
-  function renderActivity(pr) {
-    const items = pr.timeline;
-    if (!items.length) {
+  // What people said, oldest first, before the code: comments, reviews, and every inline review
+  // comment with the line it is on. Bots (Linear, github-actions, Graphite) go after the code.
+  function renderDiscussion(pr) {
+    const threads = state.threads
+      .filter((thread) => thread.comments.length && !thread.comments[0].author.bot)
+      .map((thread) => ({ type: 'thread', thread, createdAt: thread.comments[0].createdAt }));
+    const items = pr.timeline.filter((item) => !item.author.bot).concat(threads)
+      .sort((left, right) => String(left.createdAt).localeCompare(String(right.createdAt)));
+    const bots = pr.timeline.filter((item) => item.author.bot).length;
+    if (!items.length && !bots) {
       return '';
     }
     const hidden = state.showAllActivity ? 0 : Math.max(0, items.length - ACTIVITY_VISIBLE);
+    const botNote = bots
+      ? `<button type="button" class="link-button bot-note" data-show-bots>${bots} bot comment${bots === 1 ? '' : 's'} after the code</button>`
+      : '';
     return `
-      <div class="metadata-section metadata-activity">
+      <div class="metadata-section metadata-activity" id="discussion">
         <div class="metadata-section-heading">
-          <div class="metadata-section-title"><span>Activity</span><span class="section-count">${items.length}</span></div>
+          <div class="metadata-section-title"><span>Discussion</span><span class="section-count">${items.length}</span></div>
+          ${botNote}
         </div>
+        ${items.length ? '' : '<p class="muted discussion-empty">No one has commented yet.</p>'}
         ${hidden ? `<button type="button" class="link-button activity-more" data-activity-more>Show ${hidden} earlier</button>` : ''}
-        <ol class="activity-list">${items.slice(hidden).map(renderActivityItem).join('')}</ol>
+        <ol class="activity-list">${items.slice(hidden).map((item) => (item.type === 'thread' ? renderDiscussionThread(item.thread) : renderActivityItem(item))).join('')}</ol>
       </div>
+    `;
+  }
+
+  function renderDiscussionThread(thread) {
+    const [first, ...replies] = thread.comments;
+    const where = thread.fileLevel ? thread.githubPath : `${thread.githubPath}:${thread.endLine}`;
+    const last = replies[replies.length - 1];
+    const replyNote = replies.length
+      ? `<a href="#" class="thread-replies-note" data-jump-comment="${escapeAttr(thread.id)}">${replies.length} repl${replies.length === 1 ? 'y' : 'ies'}, last from ${escapeHtml(last.author.login)}</a>`
+      : '';
+    return `
+      <li>
+        <article class="activity-card thread-card${thread.resolved ? ' resolved' : ''}">
+          ${avatar(first.author, 28)}
+          <div class="activity-main">
+            <header class="activity-card-header">
+              <div class="activity-headline">
+                <span class="activity-user">${escapeHtml(first.author.login)}</span>
+                <span class="activity-action">commented on</span>
+                <a href="#" class="activity-file" data-jump-comment="${escapeAttr(thread.id)}" title="Show it in the code">${escapeHtml(where)}</a>
+                ${thread.resolved ? '<span class="pill pill-resolved">Resolved</span>' : ''}
+                ${thread.outdated ? '<span class="pill">Outdated</span>' : ''}
+              </div>
+              <a class="activity-time" href="${escapeAttr(first.url)}" target="_blank" rel="noreferrer noopener">${time(first.createdAt)}</a>
+            </header>
+            ${thread.diffHunk ? renderDiffHunk(thread.diffHunk, 3) : ''}
+            <div class="markdown-body activity-body">${first.bodyHTML}</div>
+            ${replyNote}
+          </div>
+        </article>
+      </li>
+    `;
+  }
+
+  function renderBotComments() {
+    const items = state.data.pr.timeline.filter((item) => item.author.bot);
+    if (!items.length) {
+      return '';
+    }
+    const names = Array.from(new Set(items.map((item) => item.author.login))).join(', ');
+    return `
+      <section class="bot-comments" id="bot-comments">
+        <details data-bot-details${state.botsOpen ? ' open' : ''}>
+          <summary><span class="metadata-section-title"><span>Bot comments</span><span class="section-count">${items.length} · ${escapeHtml(names)}</span></span></summary>
+          <ol class="activity-list">${items.map(renderActivityItem).join('')}</ol>
+        </details>
+      </section>
     `;
   }
 
@@ -1973,8 +2040,8 @@
     `;
   }
 
-  function renderDiffHunk(hunk) {
-    const lines = hunk.split('\n').filter((line) => !line.startsWith('@@')).slice(-6);
+  function renderDiffHunk(hunk, count = 6) {
+    const lines = hunk.split('\n').filter((line) => !line.startsWith('@@')).slice(-count);
     return `<pre class="outdated-hunk">${lines.map((line) => {
       const tone = line.startsWith('+') ? 'new' : line.startsWith('-') ? 'old' : '';
       return `<span class="${tone}">${escapeHtml(line)}</span>`;

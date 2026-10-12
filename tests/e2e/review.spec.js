@@ -255,6 +255,40 @@ test('switching pull requests happens in place: sidebar, stack keys, back and fo
   expect(await stillTheSamePage()).toBe(true);
 });
 
+test('people come before the code, inline comments included, and bots after it', async ({ page }) => {
+  await page.goto(`${base}/diffs/2`);
+  const discussion = page.locator('#discussion');
+  const cards = discussion.locator('.activity-card');
+  await expect(cards).toHaveCount(4);
+  const threads = discussion.locator('.thread-card');
+  await expect(threads.filter({ hasText: 'alice commented on src/app.js:10' })).toContainText('Why 100?');
+  await expect(threads.filter({ hasText: 'bob commented on src/app.js:5' })).toContainText('Outdated');
+  await expect(cards.nth(2)).toContainText('alice commented');
+  await expect(cards.nth(2)).toContainText('Looks close.');
+  await expect(cards.nth(3)).toContainText('me reviewed');
+  await expect(discussion).not.toContainText('Tests PASSED');
+
+  const order = await page.evaluate(() => {
+    const at = (node) => Array.from(document.querySelectorAll('#discussion, article.file, #bot-comments')).indexOf(node);
+    return {
+      discussion: at(document.getElementById('discussion')),
+      firstFile: at(document.querySelector('article.file')),
+      bots: at(document.getElementById('bot-comments')),
+      files: document.querySelectorAll('article.file').length,
+    };
+  });
+  expect(order).toEqual({ discussion: 0, firstFile: 1, bots: order.files + 1, files: order.files });
+  await expect(page.locator('#bot-comments details')).not.toHaveAttribute('open', '');
+
+  await discussion.locator('[data-show-bots]').click();
+  await expect(page.locator('#bot-comments details')).toHaveAttribute('open', '');
+  await expect(page.locator('#bot-comments')).toContainText('github-actions');
+  await expect(page.locator('#bot-comments')).toContainText('Tests PASSED');
+
+  await page.locator('#discussion [data-jump-comment="T_live"]').first().click();
+  await expect(page.locator('article.file [data-comment-id="T_live"]')).toBeInViewport();
+});
+
 test('the layout buttons switch between side by side and unified', async ({ page }) => {
   await page.goto(`${base}/diffs/2`);
   await expect(page.locator('table.diff-table.split').first()).toBeVisible();

@@ -247,13 +247,22 @@ function pullRequest(state, number) {
       ],
     },
     comments: {
-      nodes: [{
-        id: 'IC_1',
-        createdAt: '2026-10-01T11:00:00Z',
-        bodyHTML: '<p>Looks close.</p>',
-        url: `https://github.com/${OWNER}/${REPO}/pull/2#issuecomment-1`,
-        author: actor('alice'),
-      }],
+      nodes: [
+        {
+          id: 'IC_bot',
+          createdAt: '2026-10-01T10:30:00Z',
+          bodyHTML: '<p>Tests PASSED</p>',
+          url: `https://github.com/${OWNER}/${REPO}/pull/2#issuecomment-0`,
+          author: { __typename: 'Bot', login: 'github-actions', avatarUrl: '' },
+        },
+        {
+          id: 'IC_1',
+          createdAt: '2026-10-01T11:00:00Z',
+          bodyHTML: '<p>Looks close.</p>',
+          url: `https://github.com/${OWNER}/${REPO}/pull/2#issuecomment-1`,
+          author: actor('alice'),
+        },
+      ],
     },
     commits: {
       totalCount: 3,

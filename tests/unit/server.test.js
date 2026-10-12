@@ -149,7 +149,11 @@ test('pr returns the pull request shaped for the viewer', async () => {
   assert.equal(body.pr.lastReviewedOid, fake.LAST_REVIEWED_OID);
   assert.deepEqual(body.pr.checks.contexts.map((item) => item.state), ['SUCCESS', 'FAILURE', 'PENDING']);
   assert.deepEqual(body.pr.reviewers, [{ login: 'me', avatarUrl: '', team: false, state: 'REQUESTED' }]);
-  assert.deepEqual(body.pr.timeline.map((item) => item.type), ['comment', 'review']);
+  assert.deepEqual(body.pr.timeline.map((item) => [item.type, item.author.login, item.author.bot]), [
+    ['comment', 'github-actions', true],
+    ['comment', 'alice', false],
+    ['review', 'me', false],
+  ]);
   assert.deepEqual(body.pr.viewed, { 'src/app.js': false, 'docs/new.md': false });
 });
 
