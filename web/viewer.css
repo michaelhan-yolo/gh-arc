@@ -262,32 +262,21 @@ h1 {
   font-size: 11px;
 }
 
+.app-icon {
+  display: block;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+}
+
 .home-link {
   display: inline-flex;
   flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--panel);
-  color: var(--text);
-  text-decoration: none;
+  border-radius: 50%;
 }
 
-.home-link:hover {
-  border-color: var(--muted);
-}
-
-.home-link svg {
-  width: 17px;
-  height: 17px;
-  fill: none;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 2;
+.home-link:hover .app-icon {
+  opacity: 0.8;
 }
 
 .toolbar {

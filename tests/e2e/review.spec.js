@@ -299,6 +299,20 @@ test('the layout buttons switch between side by side and unified', async ({ page
   await expect(page.locator('#mode-split')).toHaveClass(/active/);
 });
 
+test('both pages carry the app icon, and the one on a pull request leads to the inbox', async ({ page }) => {
+  const icon = await page.request.get(`${base}/assets/icon.svg`);
+  expect(icon.headers()['content-type']).toBe('image/svg+xml');
+
+  await page.goto(`${base}/`);
+  await expect(page.locator('link[rel="icon"]')).toHaveAttribute('href', '/assets/icon.svg');
+  await page.goto(`${base}/diffs/2`);
+  await expect(page.locator('link[rel="icon"]')).toHaveAttribute('href', '/assets/icon.svg');
+  const logo = page.locator('.home-link .app-icon');
+  await expect.poll(() => logo.evaluate((img) => img.naturalWidth)).toBeGreaterThan(0);
+  await page.locator('.home-link').click();
+  await expect(page).toHaveURL(`${base}/`);
+});
+
 test('the handle between your stacks and the files resizes them and remembers where it was', async ({ page }) => {
   await page.goto(`${base}/diffs/2`);
   const stacks = page.locator('#sidebar-stack');
