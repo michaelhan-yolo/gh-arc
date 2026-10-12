@@ -11,47 +11,58 @@
   const HUNK_RE = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/;
   const ACTIVITY_VISIBLE = 6;
   const LONG_SUMMARY_CHARS = 2500;
-  const ROUTE = parseRoute();
-  const RANGE = parseRange();
+  // The pull request on screen. Links between pull requests switch it in place (see navigate),
+  // so these change without a page load.
+  let ROUTE = parseRoute();
+  let RANGE = parseRange();
+  // Counts page switches; an answer that arrives after its page was left is dropped.
+  let pageLoad = 0;
 
   const state = {
     mode: readPreference('ghArcMode', 'split'),
-    files: [],
-    expanded: new Set(),
-    collapsedFolders: new Set(),
-    context: {},
-    refs: { oldRef: null, newRef: null },
-    data: null,
-    stack: null,
-    threads: [],
-    drafts: { threads: [], replies: [], body: '', event: 'COMMENT' },
-    allComments: [],
-    comments: [],
     commentsVisible: true,
-    openComments: new Set(),
-    closedComments: new Set(),
-    collapsedFiles: new Set(),
-    expandedFiles: new Set(),
-    selection: null,
-    rangeDrag: null,
-    activeCommentId: null,
-    replyToId: null,
-    editingId: null,
-    filter: '',
-    showAllActivity: false,
-    summaryExpanded: false,
-    outdatedOpen: false,
-    submitting: false,
-    submitError: '',
-    fullContext: false,
-    fileNotes: {},
-    versionPick: { from: 'base', to: null },
-    stackMenuOpen: false,
-    versionsMenuOpen: false,
     inbox: null,
-    statusOpen: false,
-    ship: { method: null, deleteBranch: null, running: false, progress: {}, errors: {} },
+    ...pageState(),
   };
+
+  // Everything that belongs to one pull request's page, fresh for each switch.
+  function pageState() {
+    return {
+      files: [],
+      expanded: new Set(),
+      collapsedFolders: new Set(),
+      context: {},
+      refs: { oldRef: null, newRef: null },
+      data: null,
+      stack: null,
+      threads: [],
+      drafts: { threads: [], replies: [], body: '', event: 'COMMENT' },
+      allComments: [],
+      comments: [],
+      openComments: new Set(),
+      closedComments: new Set(),
+      collapsedFiles: new Set(),
+      expandedFiles: new Set(),
+      selection: null,
+      rangeDrag: null,
+      activeCommentId: null,
+      replyToId: null,
+      editingId: null,
+      filter: '',
+      showAllActivity: false,
+      summaryExpanded: false,
+      outdatedOpen: false,
+      submitting: false,
+      submitError: '',
+      fullContext: false,
+      fileNotes: {},
+      versionPick: { from: 'base', to: null },
+      stackMenuOpen: false,
+      versionsMenuOpen: false,
+      statusOpen: false,
+      ship: { method: null, deleteBranch: null, running: false, progress: {}, errors: {} },
+    };
+  }
 
   const el = {
     content: document.getElementById('content'),
@@ -69,7 +80,7 @@
     stackNav: document.getElementById('stack-nav'),
     versionsNav: document.getElementById('versions-nav'),
     resizer: document.getElementById('sidebar-resizer'),
-    split: document.getElementById('sidebar-split'),
+    splitHandle: document.getElementById('sidebar-split'),
     toast: document.getElementById('toast'),
   };
 
@@ -125,42 +136,138 @@
 
   async function boot() {
     bindControls();
+    bindNavigation();
     setMode(state.mode, true);
     el.content.innerHTML = '<div class="empty">Loading pull request…</div>';
-    loadStack();
     loadInbox();
+    loadPage(true);
+  }
+
+  // Loads the pull request the address bar names. The page on screen stays (dimmed) until the
+  // new one's data is in, then everything per pull request starts fresh.
+  async function loadPage(initial) {
+    const load = ++pageLoad;
+    ROUTE = parseRoute();
+    RANGE = parseRange();
+    const previousStack = state.stack;
+    const stackRequest = api(prApi('stack')).catch((err) => ({ error: err.message }));
+    el.content.classList.add('is-loading');
     try {
       const [data, patch, threads] = await Promise.all([
         api(prApi('pr')),
         api(prApi('patch', rangeQuery())),
         api(prApi('threads')),
       ]);
-      state.data = data;
-      state.refs = { oldRef: patch.oldRef, newRef: patch.newRef || data.pr.headRefOid };
-      state.fullContext = Boolean(patch.fullContext);
-      state.fileNotes = patch.notes || {};
-      state.files = parsePatch(patch.patch);
+      if (load !== pageLoad) {
+        return;
+      }
+      Object.assign(state, pageState(), {
+        data,
+        refs: { oldRef: patch.oldRef, newRef: patch.newRef || data.pr.headRefOid },
+        fullContext: Boolean(patch.fullContext),
+        fileNotes: patch.notes || {},
+        files: parsePatch(patch.patch),
+        stack: stackAround(previousStack, ROUTE.number),
+      });
       state.versionPick = initialVersionPick(data.pr);
       applyThreads(threads);
       document.title = `#${data.pr.number} ${data.pr.title}`;
+      el.filter.value = '';
       render();
-      jumpToHash();
+      if (window.location.hash) {
+        jumpToHash();
+      } else if (!initial) {
+        window.scrollTo(0, 0);
+      }
     } catch (err) {
+      if (load !== pageLoad) {
+        return;
+      }
       renderFatal(err);
+    } finally {
+      if (load === pageLoad) {
+        el.content.classList.remove('is-loading');
+      }
     }
-  }
-
-  async function loadStack() {
-    try {
-      state.stack = await api(prApi('stack'));
-    } catch (err) {
-      state.stack = { error: err.message };
+    const stack = await stackRequest;
+    if (load !== pageLoad) {
+      return;
     }
+    state.stack = stack;
     renderStackNav();
     if (state.data) {
       renderSidebar();
       renderStatusNav();
     }
+  }
+
+  // While a pull request's own stack loads, the stack it came from still describes it when it
+  // is part of that stack, so the stack bar and sidebar hold still.
+  function stackAround(stack, number) {
+    if (!stack || stack.error || !stack.entries.some((entry) => entry.number === number)) {
+      return null;
+    }
+    const entry = stack.entries.find((item) => item.number === number);
+    return {
+      ...stack,
+      current: number,
+      parent: entry.parent,
+      children: stack.entries.filter((item) => item.parent === number).map((item) => item.number),
+    };
+  }
+
+  async function refreshStack() {
+    const load = pageLoad;
+    const stack = await api(prApi('stack')).catch((err) => ({ error: err.message }));
+    if (load !== pageLoad) {
+      return;
+    }
+    state.stack = stack;
+    renderStackNav();
+    renderSidebar();
+    renderStatusNav();
+  }
+
+  // Links to another pull request (or another view of this one) switch the page in place.
+  function bindNavigation() {
+    document.addEventListener('click', (event) => {
+      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+        return;
+      }
+      const link = event.target.closest('a[href]');
+      if (!link || link.target === '_blank') {
+        return;
+      }
+      const url = new URL(link.href, window.location.href);
+      const samePage = url.pathname === window.location.pathname && url.search === window.location.search;
+      if (url.origin !== window.location.origin || (samePage && url.hash) ||
+          !window.GhArcRoutes.parseDiffPath(url.pathname, homeRepo)) {
+        return;
+      }
+      event.preventDefault();
+      link.classList.add('pending');
+      navigate(`${url.pathname}${url.search}${url.hash}`);
+    });
+    window.addEventListener('popstate', () => loadPage(false));
+  }
+
+  function navigate(path) {
+    if (!readyToLeave()) {
+      return;
+    }
+    flushReviewBody();
+    window.history.pushState(null, '', path);
+    loadPage(false);
+  }
+
+  function readyToLeave() {
+    if (state.ship.running || state.submitting) {
+      showToast('Wait for this to finish before leaving.', 'error');
+      return false;
+    }
+    const typing = Array.from(el.content.querySelectorAll('textarea[data-comment-text], textarea[data-reply-text], textarea[data-draft-edit-text]'))
+      .some((textarea) => textarea.value.trim());
+    return !typing || window.confirm('Leave this pull request? The comment you are writing is not saved.');
   }
 
   async function loadInbox() {
@@ -175,7 +282,11 @@
   }
 
   async function reloadAfterSubmit() {
+    const load = pageLoad;
     const [data, threads] = await Promise.all([api(prApi('pr')), api(prApi('threads'))]);
+    if (load !== pageLoad) {
+      return;
+    }
     state.data = data;
     applyThreads(threads);
     render();
@@ -319,9 +430,9 @@
       if (event.target.closest('[data-versions-menu-toggle]')) {
         setVersionsMenu(!state.versionsMenuOpen);
       } else if (event.target.closest('[data-versions-show]')) {
-        window.location.assign(versionsUrl(state.versionPick.from, state.versionPick.to));
+        navigate(versionsUrl(state.versionPick.from, state.versionPick.to));
       } else if (event.target.closest('[data-versions-since]')) {
-        window.location.assign(versionsUrl(state.data.pr.lastReviewedOid, state.data.pr.headRefOid));
+        navigate(versionsUrl(state.data.pr.lastReviewedOid, state.data.pr.headRefOid));
       }
     });
     el.versionsNav.addEventListener('change', (event) => {
@@ -483,24 +594,33 @@
       const value = target.value;
       const pr = state.data.pr;
       if (value.startsWith('commit:')) {
-        window.location.assign(`${prPath(ROUTE.number)}?commit=${value.slice('commit:'.length)}`);
+        navigate(`${prPath(ROUTE.number)}?commit=${value.slice('commit:'.length)}`);
       } else if (value === 'since') {
-        window.location.assign(versionsUrl(pr.lastReviewedOid, pr.headRefOid));
+        navigate(versionsUrl(pr.lastReviewedOid, pr.headRefOid));
       } else if (value === '') {
-        window.location.assign(prPath(ROUTE.number));
+        navigate(prPath(ROUTE.number));
       }
     }
   }
 
   let reviewBodyTimer = null;
 
+  // Saves the review summary now if a save is waiting; runs before leaving the page, while the
+  // routes still name this pull request.
+  function flushReviewBody() {
+    if (reviewBodyTimer === null) {
+      return;
+    }
+    window.clearTimeout(reviewBodyTimer);
+    reviewBodyTimer = null;
+    saveDraftPayload({ action: 'review', body: state.drafts.body }).catch(() => {});
+  }
+
   function onContentInput(event) {
     if (event.target.matches('[data-review-body]')) {
       state.drafts.body = event.target.value;
       window.clearTimeout(reviewBodyTimer);
-      reviewBodyTimer = window.setTimeout(() => {
-        saveDraftPayload({ action: 'review', body: state.drafts.body }).catch(() => {});
-      }, 600);
+      reviewBodyTimer = window.setTimeout(flushReviewBody, 600);
     }
   }
 
@@ -563,7 +683,7 @@
       const stack = state.stack;
       const target = stack && !stack.error && (event.key === '[' ? stack.parent : stack.children[0]);
       if (target) {
-        window.location.assign(prPath(target));
+        navigate(prPath(target));
       }
     }
   }
@@ -642,11 +762,11 @@
 
   // The handle between your stacks and the file list; its place is kept as a share of the sidebar.
   function bindSidebarSplit() {
-    const sidebar = el.split.parentElement;
+    const sidebar = el.splitHandle.parentElement;
     const DEFAULT_SHARE = 0.66;
     const apply = (share) => {
       sidebar.style.setProperty('--stacks-share', `${(share * 100).toFixed(1)}%`);
-      el.split.setAttribute('aria-valuenow', String(Math.round(share * 100)));
+      el.splitHandle.setAttribute('aria-valuenow', String(Math.round(share * 100)));
     };
     const save = (share) => {
       apply(share);
@@ -661,13 +781,13 @@
     apply(saved > 0 && saved < 1 ? saved : DEFAULT_SHARE);
 
     let dragging = false;
-    el.split.addEventListener('pointerdown', (event) => {
+    el.splitHandle.addEventListener('pointerdown', (event) => {
       dragging = true;
       document.body.classList.add('resizing-split');
-      el.split.setPointerCapture(event.pointerId);
+      el.splitHandle.setPointerCapture(event.pointerId);
       event.preventDefault();
     });
-    el.split.addEventListener('pointermove', (event) => {
+    el.splitHandle.addEventListener('pointermove', (event) => {
       if (dragging) {
         save(shareAt(event.clientY));
       }
@@ -676,10 +796,10 @@
       dragging = false;
       document.body.classList.remove('resizing-split');
     };
-    el.split.addEventListener('pointerup', stop);
-    el.split.addEventListener('pointercancel', stop);
-    el.split.addEventListener('dblclick', () => save(DEFAULT_SHARE));
-    el.split.addEventListener('keydown', (event) => {
+    el.splitHandle.addEventListener('pointerup', stop);
+    el.splitHandle.addEventListener('pointercancel', stop);
+    el.splitHandle.addEventListener('dblclick', () => save(DEFAULT_SHARE));
+    el.splitHandle.addEventListener('keydown', (event) => {
       if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') {
         return;
       }
@@ -1116,14 +1236,19 @@
   }
 
   async function refreshAfterShip() {
+    const load = pageLoad;
     try {
-      state.data = await api(prApi('pr'));
+      const data = await api(prApi('pr'));
+      if (load !== pageLoad) {
+        return;
+      }
+      state.data = data;
     } catch (err) {
       showToast(`Couldn't reload the pull request: ${escapeHtml(err.message)}`, 'error');
     }
     state.stack = null;
     renderStatusNav();
-    await Promise.all([loadStack(), loadInbox()]);
+    await Promise.all([refreshStack(), loadInbox()]);
     render();
   }
 
@@ -1176,12 +1301,13 @@
     const pr = state.data.pr;
     const repo = `${ROUTE.owner}/${ROUTE.repo}`;
     const stack = state.stack && !state.stack.error ? state.stack : null;
-    const items = stack ? stack.entries.slice().reverse() : [];
-    const numbers = new Set(items.map((item) => item.number).concat(pr.number));
     const section = state.inbox && !state.inbox.error
       ? state.inbox.sections.find((item) => item.key === 'mine')
       : null;
     const groups = section ? section.groups : [];
+    const listed = groups.find((group) => group.repo === repo && group.items.some((item) => item.pr.number === pr.number));
+    const items = stack ? stack.entries.slice().reverse() : listed ? listed.items.map((item) => item.pr) : [];
+    const numbers = new Set(items.map((item) => item.number).concat(pr.number));
     const overlaps = (group) => group.repo === repo && group.items.some((item) => numbers.has(item.pr.number));
     const current = {
       repo,
@@ -2054,9 +2180,13 @@
     if (viewed && article && article.getBoundingClientRect().top < 64) {
       article.scrollIntoView({ block: 'start' });
     }
+    const load = pageLoad;
     try {
       await api(prApi('viewed'), { body: { path, viewed } });
     } catch (err) {
+      if (load !== pageLoad) {
+        return;
+      }
       update(!viewed);
       showToast(`Couldn't update the viewed state: ${escapeHtml(err.message)}`, 'error');
     }
@@ -3026,8 +3156,11 @@
   }
 
   async function saveDraftPayload(payload) {
+    const load = pageLoad;
     const drafts = await api(prApi('drafts'), { body: payload });
-    setDrafts(drafts);
+    if (load === pageLoad) {
+      setDrafts(drafts);
+    }
     return drafts;
   }
 
@@ -3126,8 +3259,12 @@
   }
 
   async function resolveThread(id, resolved) {
+    const load = pageLoad;
     try {
       await api(prApi('resolve'), { body: { threadId: id, resolved } });
+      if (load !== pageLoad) {
+        return;
+      }
     } catch (err) {
       showToast(`Couldn't ${resolved ? 'resolve' : 'unresolve'} the thread: ${escapeHtml(err.message)}`, 'error');
       return;
@@ -3184,6 +3321,7 @@
   }
 
   async function fetchContext(button) {
+    const load = pageLoad;
     const key = button.getAttribute('data-context-key');
     const fileId = Number(button.getAttribute('data-file-id'));
     state.context[key] = { ...(state.context[key] || {}), loading: true, error: '' };
@@ -3204,6 +3342,9 @@
         params.set('base', state.data.pr.baseRefOid);
       }
       const payload = await api(prApi('context', params.toString()));
+      if (load !== pageLoad) {
+        return;
+      }
       const rows = contextRows(payload);
       state.context[key] = {
         ...(state.context[key] || {}),
@@ -3214,6 +3355,9 @@
       const fileState = fileContext(state.files[fileId]);
       rows.forEach((row) => fileState.rows.set(lineKey(row), row));
     } catch (err) {
+      if (load !== pageLoad) {
+        return;
+      }
       state.context[key] = { ...(state.context[key] || {}), loading: false, error: err.message || 'Context request failed.' };
     }
     rerenderFileById(fileId);

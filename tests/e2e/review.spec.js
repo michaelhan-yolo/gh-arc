@@ -219,6 +219,52 @@ test('the sidebar lists stacks only, one row each, with the one on screen marked
   await expect(page).toHaveURL(`${base}/diffs/20`);
 });
 
+test('switching pull requests happens in place: sidebar, stack keys, back and forward', async ({ page }) => {
+  await page.goto(`${base}/diffs/2`);
+  await expect(page.locator('.pr-title')).toHaveText('Render widgets');
+  await page.evaluate(() => {
+    window.stillTheSamePage = true;
+  });
+  const stillTheSamePage = () => page.evaluate(() => window.stillTheSamePage === true);
+
+  await page.locator('#sidebar-stack a.side-stack-entry', { hasText: 'Widget docs' }).click();
+  await expect(page).toHaveURL(`${base}/diffs/20`);
+  await expect(page.locator('#pr-heading')).toContainText('octo/widgets#20');
+  expect(await stillTheSamePage()).toBe(true);
+
+  await page.goBack();
+  await expect(page).toHaveURL(`${base}/diffs/2`);
+  await expect(page.locator('.pr-title')).toHaveText('Render widgets');
+  await expect(page.locator('#stack-nav')).toContainText('Stack 2/3');
+  await page.locator('body').press('[');
+  await expect(page.locator('.pr-title')).toHaveText('Add the widget model');
+  await expect(page.locator('#stack-nav')).toContainText('Stack 1/3');
+  await expect(page.locator('#sidebar-stack .side-stack-entry.current .side-group-count')).toHaveText('1/3');
+  expect(await stillTheSamePage()).toBe(true);
+
+  await page.locator('[data-comment-reply="T_live"]').click();
+  await page.locator('[data-reply-text]').fill('half-written');
+  page.once('dialog', (dialog) => dialog.dismiss());
+  await page.locator('#stack-nav a.stack-step', { hasText: '#2' }).click();
+  await expect(page).toHaveURL(`${base}/diffs/1`);
+  await expect(page.locator('[data-reply-text]')).toHaveValue('half-written');
+  page.once('dialog', (dialog) => dialog.accept());
+  await page.locator('#stack-nav a.stack-step', { hasText: '#2' }).click();
+  await expect(page).toHaveURL(`${base}/diffs/2`);
+  await expect(page.locator('.pr-title')).toHaveText('Render widgets');
+  expect(await stillTheSamePage()).toBe(true);
+});
+
+test('the layout buttons switch between side by side and unified', async ({ page }) => {
+  await page.goto(`${base}/diffs/2`);
+  await expect(page.locator('table.diff-table.split').first()).toBeVisible();
+  await page.locator('#mode-unified').click();
+  await expect(page.locator('table.diff-table.unified').first()).toBeVisible();
+  await page.locator('#mode-split').click();
+  await expect(page.locator('table.diff-table.split').first()).toBeVisible();
+  await expect(page.locator('#mode-split')).toHaveClass(/active/);
+});
+
 test('the handle between your stacks and the files resizes them and remembers where it was', async ({ page }) => {
   await page.goto(`${base}/diffs/2`);
   const stacks = page.locator('#sidebar-stack');

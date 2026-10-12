@@ -760,6 +760,16 @@ a.side-stack-entry:focus {
 .content {
   min-width: 0;
   padding: 18px;
+  transition: opacity 120ms ease;
+}
+
+.content.is-loading {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+a.side-stack-entry.pending {
+  background: var(--accent-soft);
 }
 
 .empty {
