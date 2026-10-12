@@ -89,6 +89,20 @@ function rawRequest(port, options) {
   });
 }
 
+test('the forward port serves the same app, so port 80 traffic never shares the direct port', async () => {
+  const { createServer } = require('../../lib/server');
+  const app2 = createServer({ homeRepo: 'octo/widgets' });
+  const port = await app2.listen(0, '127.0.0.1', true);
+  const forward = await app2.listenForward(port + 1);
+  assert.equal(forward, port + 1);
+  assert.equal((await rawRequest(forward, { path: '/2', headers: { Host: 'diffs' } })).status, 200);
+  const ping = await (await fetch(`http://127.0.0.1:${port}/api/ping`)).json();
+  assert.equal(ping.forwardPort, port + 1);
+  const taken = createServer();
+  assert.equal(await taken.listenForward(port + 1), null);
+  await app2.close();
+});
+
 test('the diffs alias host is allowed, for reads and page-token writes, and gets short paths', async () => {
   const { createServer } = require('../../lib/server');
   const homed = createServer({ homeRepo: 'octo/widgets', sessionToken: 'page-token' });

@@ -51,8 +51,6 @@
     inbox: null,
     statusOpen: false,
     ship: { method: null, deleteBranch: null, running: false, progress: {}, errors: {} },
-    openStacks: new Set(readStoredList('ghArcOpenStacks')),
-    closedStacks: new Set(),
   };
 
   const el = {
@@ -264,15 +262,6 @@
     }
   }
 
-  function readStoredList(key) {
-    try {
-      const value = JSON.parse(readPreference(key, '[]'));
-      return Array.isArray(value) ? value : [];
-    } catch (err) {
-      return [];
-    }
-  }
-
   function writePreference(key, value) {
     try {
       window.localStorage.setItem(key, value);
@@ -307,12 +296,6 @@
       state.filter = el.filter.value.trim().toLowerCase();
       renderFileList();
       renderContent();
-    });
-    el.sidebarStack.addEventListener('click', (event) => {
-      const group = event.target.closest('[data-side-group]');
-      if (group) {
-        toggleSideGroup(group.getAttribute('data-side-group'));
-      }
     });
     el.fileList.addEventListener('click', (event) => {
       const button = event.target.closest('[data-folder]');
@@ -1146,34 +1129,35 @@
 
   // ---------------------------------------------------------------- sidebar
 
-  // The sidebar's top panel lists the stacks you have open, each a collapsible group drawn top
-  // first over its trunk. The stack on screen comes first and starts open; one you don't own sits
-  // under "Viewing". The bottom panel holds this pull request's files.
+  // The sidebar's top panel lists your open stacks, one row each, named by the bottom pull
+  // request it opens; pull requests outside any stack are left out. The stack on screen is
+  // highlighted with your place in it, under "Viewing" when it isn't yours. Its pull requests are
+  // in the top bar's stack menu. The bottom panel holds this pull request's files.
   function renderSidebar() {
-    const groups = sidebarGroups();
-    const current = groups[0];
-    const others = groups.slice(1);
+    const stacks = sidebarStacks();
+    const current = stacks.find((stack) => stack.current) || null;
+    const mine = stacks.filter((stack) => stack.mine);
     let note = '';
     if (!state.inbox) {
       note = '<div class="muted side-stack-note">Finding your stacks…</div>';
     } else if (state.inbox.error) {
       note = `<div class="muted side-stack-note">Couldn't load your stacks: ${escapeHtml(state.inbox.error)}</div>`;
+    } else if (!mine.length) {
+      note = '<div class="muted side-stack-note">No open stacks.</div>';
     }
     const heading = (label, count) =>
       `<div class="side-stack-heading metadata-section-title"><span>${label}</span>${count ? `<span class="section-count">${count}</span>` : ''}</div>`;
-    const yours = current.mine
-      ? heading('Your stacks', groups.length) + groups.map(renderSideGroup).join('')
-      : heading('Viewing') + renderSideGroup(current) + heading('Your stacks', others.length) + others.map(renderSideGroup).join('');
-    el.sidebarStack.innerHTML = yours + note;
+    const viewing = current && !current.mine ? heading('Viewing') + renderStackEntry(current) : '';
+    el.sidebarStack.innerHTML = viewing + heading('Your stacks', mine.length) + mine.map(renderStackEntry).join('') + note;
     revealCurrentStackRow();
     el.filesHeading.innerHTML = `<span>Files in #${ROUTE.number}</span><span class="section-count">${state.files.length}</span>`;
     renderSummary();
     renderFileList();
   }
 
-  // Scrolls the stacks panel, not the page, to keep the pull request on screen in view.
+  // Scrolls the stacks panel, not the page, to keep the stack on screen in view.
   function revealCurrentStackRow() {
-    const row = el.sidebarStack.querySelector('.side-stack-row.current');
+    const row = el.sidebarStack.querySelector('.side-stack-entry.current');
     if (!row) {
       return;
     }
@@ -1186,102 +1170,61 @@
     }
   }
 
-  function sidebarGroups() {
+  // Stacks of two or more, each top first: the one on screen (from the stack lookup) and your
+  // others (from the inbox), without listing one twice.
+  function sidebarStacks() {
     const pr = state.data.pr;
     const repo = `${ROUTE.owner}/${ROUTE.repo}`;
-    const stack = state.stack && !state.stack.error && state.stack.entries.length ? state.stack : null;
-    const items = stack ? stack.entries.slice().reverse() : [{
-      number: pr.number,
-      title: pr.title,
-      state: pr.state,
-      reviewStatus: pr.reviewStatus,
-      checks: pr.checks ? pr.checks.state : null,
-      lane: 0,
-    }];
-    const numbers = new Set(items.map((item) => item.number));
+    const stack = state.stack && !state.stack.error ? state.stack : null;
+    const items = stack ? stack.entries.slice().reverse() : [];
+    const numbers = new Set(items.map((item) => item.number).concat(pr.number));
     const section = state.inbox && !state.inbox.error
       ? state.inbox.sections.find((item) => item.key === 'mine')
       : null;
-    const mine = section ? section.groups : [];
+    const groups = section ? section.groups : [];
     const overlaps = (group) => group.repo === repo && group.items.some((item) => numbers.has(item.pr.number));
     const current = {
-      key: `${repo}#${items[items.length - 1].number}`,
       repo,
-      trunk: stack ? stack.trunk : pr.baseRefName,
       items,
       current: true,
-      mine: pr.author.login === state.data.viewer || mine.some(overlaps),
+      mine: pr.author.login === state.data.viewer || groups.some(overlaps),
     };
-    return [current].concat(mine.filter((group) => !overlaps(group)).map((group) => ({
-      key: `${group.repo}#${group.items[group.items.length - 1].pr.number}`,
+    return [current].concat(groups.filter((group) => !overlaps(group)).map((group) => ({
       repo: group.repo,
-      trunk: group.trunk,
-      items: group.items.map((item) => ({ ...item.pr, lane: item.lane })),
+      items: group.items.map((item) => item.pr),
       current: false,
       mine: true,
-    })));
+    }))).filter((entry) => entry.items.length > 1);
   }
 
-  function isStackOpen(group) {
-    return group.current ? !state.closedStacks.has(group.key) : state.openStacks.has(group.key);
-  }
-
-  function renderSideGroup(group) {
-    if (group.items.length === 1 && !group.current) {
-      return `<div class="side-group single">${renderSideStackRow(group, group.items[0], true)}</div>`;
+  // One glyph for the stack as a whole: accepted when every pull request is, blocked when any
+  // has changes requested.
+  function stackStatus(items) {
+    if (items.some((item) => item.reviewStatus === 'CHANGES_REQUESTED')) {
+      return statusMark('CHANGES_REQUESTED');
     }
-    const open = isStackOpen(group);
-    const bottom = group.items[group.items.length - 1];
-    const repoName = group.repo === `${ROUTE.owner}/${ROUTE.repo}` ? '' : `<span class="side-group-repo">${escapeHtml(group.repo.split('/')[1])}</span>`;
-    const rows = open
-      ? group.items.map((item, index) => renderSideStackRow(group, item, index === 0)).join('') + `
-        <div class="side-stack-row side-stack-trunk">
-          <span class="stack-graph" aria-hidden="true"><span class="stack-dot"></span></span>
-          <code>${escapeHtml(group.trunk)}</code>
-        </div>`
+    return items.every((item) => item.reviewStatus === 'ACCEPTED' || item.reviewStatus === 'MERGED')
+      ? statusMark('ACCEPTED')
       : '';
-    return `
-      <div class="side-group${group.current ? ' current' : ''}${open ? '' : ' collapsed'}">
-        <button type="button" class="side-group-head" data-side-group="${escapeAttr(group.key)}" aria-expanded="${open}"
-          title="${escapeAttr(`Stack of ${group.items.length}, starting at #${bottom.number} ${bottom.title}`)}">
-          <span class="side-group-label">${escapeHtml(bottom.title)}</span>
-          ${repoName}
-          <span class="side-group-count">${group.items.length}</span>
-        </button>
-        ${rows}
-      </div>
-    `;
   }
 
-  function renderSideStackRow(group, entry, first) {
-    const current = group.current && entry.number === ROUTE.number;
-    const classes = `side-stack-row${current ? ' current' : ''}${first ? ' is-first' : ''}`;
-    const title = `#${entry.number} ${entry.title}`;
+  function renderStackEntry(stack) {
+    const bottom = stack.items[stack.items.length - 1];
+    const repoName = stack.repo === `${ROUTE.owner}/${ROUTE.repo}` ? '' : `<span class="side-group-repo">${escapeHtml(stack.repo.split('/')[1])}</span>`;
+    const position = stack.items.length - stack.items.findIndex((item) => item.number === ROUTE.number);
+    const count = stack.current ? `${position}/${stack.items.length}` : String(stack.items.length);
     const body = `
-      <span class="stack-graph" aria-hidden="true"><span class="stack-dot"></span></span>
-      <span class="side-stack-number">#${entry.number}</span>
-      <span class="side-stack-title">${escapeHtml(entry.title)}</span>
-      <span class="side-stack-marks">${statusMark(entry.reviewStatus)}${checksIcon(entry.checks)}</span>
+      <span class="side-stack-dot" aria-hidden="true"></span>
+      <span class="side-group-label">${escapeHtml(bottom.title)}</span>
+      ${repoName}
+      ${stackStatus(stack.items)}
+      <span class="side-group-count">${count}</span>
     `;
-    if (!current) {
-      return `<a class="${classes}" href="${escapeAttr(diffPath(group.repo, entry.number))}" style="--lane: ${entry.lane}" title="${escapeAttr(title)}">${body}</a>`;
+    if (stack.current) {
+      return `<div class="side-stack-entry current" aria-current="true" title="${escapeAttr(`You're on #${ROUTE.number}, ${position} of ${stack.items.length} from the bottom`)}">${body}</div>`;
     }
-    return `<div class="${classes}" style="--lane: ${entry.lane}" aria-current="page" title="${escapeAttr(title)}">${body}</div>`;
-  }
-
-  function toggleSideGroup(key) {
-    const group = sidebarGroups().find((item) => item.key === key);
-    if (!group) {
-      return;
-    }
-    const set = group.current ? state.closedStacks : state.openStacks;
-    if (set.has(key)) {
-      set.delete(key);
-    } else {
-      set.add(key);
-    }
-    writePreference('ghArcOpenStacks', JSON.stringify(Array.from(state.openStacks)));
-    renderSidebar();
+    return `<a class="side-stack-entry" href="${escapeAttr(diffPath(stack.repo, bottom.number))}"
+      title="${escapeAttr(`Stack of ${stack.items.length}; opens #${bottom.number} at the bottom`)}">${body}</a>`;
   }
 
   function renderFileList() {

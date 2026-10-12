@@ -44,7 +44,7 @@ test('reviews a stacked pull request: drafts, a range, a reply, then one submitt
   await page.goto(`${base}/diffs/2`);
   await expect(page.locator('.pr-title')).toHaveText('Render widgets');
   await expect(page.locator('#stack-nav')).toContainText('Stack 2/3');
-  await expect(page.locator('.side-group.current .side-stack-row')).toHaveCount(4);
+  await expect(page.locator('#sidebar-stack .side-stack-entry.current')).toContainText('Add the widget model');
   await expect(page.locator('[data-comment-id="T_live"]')).toContainText('Why 100?');
   await expect(page.locator('.file-title', { hasText: 'docs/old.md → docs/new.md' })).toBeVisible();
 
@@ -201,27 +201,21 @@ test('the stack button opens a menu of the whole stack', async ({ page }) => {
   await expect(page).toHaveURL(`${base}/diffs/3`);
 });
 
-test('the sidebar lists your stacks, with the one on screen open to its files', async ({ page }) => {
+test('the sidebar lists stacks only, one row each, with the one on screen marked', async ({ page }) => {
   await page.goto(`${base}/diffs/2`);
   const sidebar = page.locator('#sidebar-stack');
-  await expect(sidebar.locator('.side-stack-heading')).toHaveText([/Viewing/, /Your stacks\s*2/]);
-  const current = sidebar.locator('.side-group.current');
-  await expect(current.locator('.side-stack-number')).toHaveText(['#3', '#2', '#1']);
-  await expect(current.locator('.side-stack-row.current')).toContainText('Render widgets');
-  await expect(current.locator('.side-stack-trunk')).toHaveText('main');
+  await expect(sidebar.locator('.side-stack-heading')).toHaveText([/Viewing/, /Your stacks\s*1/]);
+  const current = sidebar.locator('.side-stack-entry.current');
+  await expect(current.locator('.side-group-label')).toHaveText('Add the widget model');
+  await expect(current.locator('.side-group-count')).toHaveText('2/3');
+  await expect(sidebar.locator('.side-stack-entry')).toHaveCount(2);
+  await expect(sidebar).not.toContainText('Fix a typo');
   await expect(page.locator('#files-heading')).toHaveText(/Files in #2\s*2/);
   await expect(page.locator('.sidebar-files .file-link')).toHaveCount(2);
 
-  const docs = sidebar.locator('.side-group', { hasText: 'Widget docs' }).first();
-  await expect(docs).toHaveClass(/collapsed/);
+  const docs = sidebar.locator('a.side-stack-entry', { hasText: 'Widget docs' });
   await expect(docs.locator('.side-group-count')).toHaveText('2');
-  await expect(sidebar.locator('.side-group.single .side-stack-number')).toHaveText('#30');
-  await docs.locator('[data-side-group]').click();
-  await expect(sidebar.locator('.side-group', { hasText: 'Widget docs' }).first().locator('.side-stack-number')).toHaveText(['#21', '#20']);
-
-  await page.reload();
-  await expect(sidebar.locator('.side-group', { hasText: 'Widget docs' }).first()).not.toHaveClass(/collapsed/);
-  await sidebar.locator('a.side-stack-row', { hasText: '#20' }).click();
+  await docs.click();
   await expect(page).toHaveURL(`${base}/diffs/20`);
 });
 
@@ -229,7 +223,7 @@ test('the handle between your stacks and the files resizes them and remembers wh
   await page.goto(`${base}/diffs/2`);
   const stacks = page.locator('#sidebar-stack');
   const handle = page.locator('#sidebar-split');
-  await expect(page.locator('.side-group.current')).toBeVisible();
+  await expect(page.locator('.side-stack-entry.current')).toBeVisible();
   const sidebar = await page.locator('.sidebar').boundingBox();
   const before = (await stacks.boundingBox()).height;
   expect(before / sidebar.height).toBeGreaterThan(0.6);
@@ -242,7 +236,7 @@ test('the handle between your stacks and the files resizes them and remembers wh
   await expect.poll(async () => Math.round((await stacks.boundingBox()).height)).toBeLessThan(210);
 
   await page.reload();
-  await expect(page.locator('.side-group.current')).toBeVisible();
+  await expect(page.locator('.side-stack-entry.current')).toBeVisible();
   expect((await stacks.boundingBox()).height).toBeLessThan(210);
   await handle.dblclick();
   await expect.poll(async () => (await stacks.boundingBox()).height / sidebar.height).toBeGreaterThan(0.6);
@@ -261,7 +255,6 @@ test('a pull request under review shows a yellow status, and reviewers get the r
   await status.click();
   await expect(page.locator('.status-popover')).toContainText('Ship it shows up here once a reviewer accepts.');
   await expect(page.locator('.status-popover .reviewer')).toContainText('me');
-  await expect(page.locator('.side-group.current .side-stack-row.current .status-mark')).toHaveClass(/status-review/);
 });
 
 test('your own accepted pull request hides the review tools and ships with one click', async ({ page }) => {
@@ -349,7 +342,7 @@ test.describe('under the diffs host', () => {
     await expect(page.locator('.pr-title')).toHaveText('Render widgets');
     await expect(page.locator('#stack-nav a.stack-step')).toHaveText(['‹ #1', '#3 ›']);
     expect(await page.locator('#stack-nav a.stack-step').evaluateAll((links) => links.map((link) => link.getAttribute('href')))).toEqual(['/1', '/3']);
-    await expect(page.locator('#sidebar-stack a.side-stack-row').first()).toHaveAttribute('href', '/3');
+    await expect(page.locator('#sidebar-stack a.side-stack-entry')).toHaveAttribute('href', '/20');
     await expect(page.locator('.diff-description a')).toHaveAttribute('href', '/1');
     await page.locator('body').press(']');
     await expect(page).toHaveURL(`http://diffs:${port}/3`);
