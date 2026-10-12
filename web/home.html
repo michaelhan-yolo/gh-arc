@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="gh-arc-token" content="__GH_ARC_TOKEN__">
+  <meta name="gh-arc-home-repo" content="__GH_ARC_HOME_REPO__">
   <title>gh-arc inbox</title>
   <link rel="stylesheet" href="/assets/viewer.css">
 </head>
@@ -16,13 +17,14 @@
       </div>
     </div>
     <form id="open-form" class="open-form" role="search">
-      <input id="open-input" type="text" placeholder="Open a PR: URL, owner/repo#123" aria-label="Pull request to open" autocomplete="off">
+      <input id="open-input" type="text" placeholder="Open a PR: 11505, URL, owner/repo#123" aria-label="Pull request to open" autocomplete="off">
       <button type="submit" class="primary-action">Open</button>
     </form>
   </header>
   <main id="inbox" class="inbox">
     <div class="empty">Loading your inbox…</div>
   </main>
+  <script src="/assets/routes.js"></script>
   <script src="/assets/common.js"></script>
   <script src="/assets/home.js"></script>
 </body>

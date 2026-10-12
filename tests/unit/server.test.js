@@ -73,11 +73,58 @@ test('only localhost hosts and page-token writes get through', async () => {
 });
 
 test('pages carry the page token and a script-locking CSP', async () => {
-  const res = await fetch(`${base}/octo/widgets/pull/2`);
+  const res = await fetch(`${base}/diffs/octo/widgets/2`);
   const html = await res.text();
   assert.match(html, /<meta name="gh-arc-token" content="page-token">/);
   assert.match(res.headers.get('content-security-policy'), /script-src 'self'/);
-  assert.equal((await fetch(`${base}/octo/widgets/pull/2/files`)).status, 200);
+});
+
+function rawRequest(port, options) {
+  return new Promise((resolve) => {
+    const req = http.request({ host: '127.0.0.1', port, ...options }, (res) => {
+      res.resume();
+      resolve({ status: res.statusCode, location: res.headers.location });
+    });
+    req.end(options.body);
+  });
+}
+
+test('the diffs alias host is allowed, for reads and page-token writes, and gets short paths', async () => {
+  const { createServer } = require('../../lib/server');
+  const homed = createServer({ homeRepo: 'octo/widgets', sessionToken: 'page-token' });
+  const port = await homed.listen(0, '127.0.0.1', true);
+  assert.equal((await rawRequest(port, { path: '/api/ping', headers: { Host: 'diffs' } })).status, 200);
+  assert.equal((await rawRequest(port, { path: '/2', headers: { Host: 'diffs' } })).status, 200);
+  assert.equal((await rawRequest(port, { path: '/octo/widgets/pull/2', headers: { Host: 'diffs' } })).location, '/2');
+  assert.equal((await rawRequest(port, { path: '/octo/widgets/pull/2', headers: { Host: `localhost:${port}` } })).location, '/diffs/2');
+  const write = await rawRequest(port, {
+    method: 'POST',
+    path: '/api/pr/octo/widgets/2/drafts',
+    headers: { Host: 'diffs', Origin: 'http://diffs', 'Content-Type': 'application/json', 'X-GH-Arc-Token': 'page-token' },
+    body: JSON.stringify({ action: 'review', body: 'via the alias' }),
+  });
+  assert.equal(write.status, 200);
+  assert.equal((await rawRequest(port, { path: '/api/ping', headers: { Host: 'diffs.evil.example' } })).status, 403);
+  await homed.close();
+});
+
+test('GitHub-shaped paths redirect to /diffs/, and a bare number needs a home repository', async () => {
+  const moved = await fetch(`${base}/octo/widgets/pull/2/files?diff=base..${fake.HEAD_OID}`, { redirect: 'manual' });
+  assert.equal(moved.status, 302);
+  assert.equal(moved.headers.get('location'), `/diffs/octo/widgets/2?diff=base..${fake.HEAD_OID}`);
+  assert.equal((await fetch(`${base}/diffs/2`)).status, 404);
+  assert.equal((await fetch(`${base}/diffs`, { redirect: 'manual' })).headers.get('location'), '/');
+
+  const { createServer } = require('../../lib/server');
+  const homed = createServer({ homeRepo: 'octo/widgets' });
+  const port = await homed.listen(0, '127.0.0.1', true);
+  const home = `http://127.0.0.1:${port}`;
+  assert.equal((await fetch(`${home}/octo/widgets/pull/2`, { redirect: 'manual' })).headers.get('location'), '/diffs/2');
+  assert.equal((await fetch(`${home}/other/repo/pull/7`, { redirect: 'manual' })).headers.get('location'), '/diffs/other/repo/7');
+  const page = await (await fetch(`${home}/diffs/2`)).text();
+  assert.match(page, /<meta name="gh-arc-home-repo" content="octo\/widgets">/);
+  assert.equal((await (await fetch(`${home}/api/ping`)).json()).homeRepo, 'octo/widgets');
+  await homed.close();
 });
 
 test('pr returns the pull request shaped for the viewer', async () => {
@@ -223,6 +270,60 @@ test('inbox groups a review queue into stacks, top first', async () => {
   assert.deepEqual(needsReview.groups[0].items.map((item) => item.pr.number), [3, 2, 1]);
   const mine = body.sections.find((section) => section.key === 'mine');
   assert.deepEqual(mine.groups.map((group) => group.items.map((item) => item.pr.number)).sort(), [[21, 20], [30]]);
+});
+
+const prApiFor = (number, action) => `${base}/api/pr/octo/widgets/${number}/${action}`;
+
+test('review status comes from the review decision, or the reviews where branches are unprotected', () => {
+  const { reviewStatus } = require('../../lib/normalize');
+  const reviews = (...states) => ({ nodes: states.map((state) => ({ state })) });
+  assert.equal(reviewStatus({ merged: true }), 'MERGED');
+  assert.equal(reviewStatus({ state: 'CLOSED' }), 'CLOSED');
+  assert.equal(reviewStatus({ state: 'OPEN', isDraft: true }), 'DRAFT');
+  assert.equal(reviewStatus({ state: 'OPEN', reviewDecision: 'REVIEW_REQUIRED', latestOpinionatedReviews: reviews('APPROVED') }), 'UNDER_REVIEW');
+  assert.equal(reviewStatus({ state: 'OPEN', reviewDecision: 'APPROVED' }), 'ACCEPTED');
+  assert.equal(reviewStatus({ state: 'OPEN', reviewDecision: null, latestOpinionatedReviews: reviews('APPROVED') }), 'ACCEPTED');
+  assert.equal(reviewStatus({ state: 'OPEN', reviewDecision: null, latestOpinionatedReviews: reviews('APPROVED', 'CHANGES_REQUESTED') }), 'CHANGES_REQUESTED');
+  assert.equal(reviewStatus({ state: 'OPEN', reviewDecision: null, latestOpinionatedReviews: reviews() }), 'UNDER_REVIEW');
+});
+
+test('you cannot accept or block your own pull request', async () => {
+  const { status, body } = await post(prApiFor(1, 'submit'), { event: 'APPROVE', body: 'LGTM' });
+  assert.equal(status, 400);
+  assert.match(body.error, /your own pull request/);
+  assert.deepEqual(github.state.calls, []);
+});
+
+test('a stack ships bottom first: merge, move the next onto the trunk, merge it', async () => {
+  github.state.prs[1].approved = true;
+  github.state.prs[2].approved = true;
+  assert.equal((await post(prApiFor(2, 'merge'), { method: 'MERGE', expectedHeadOid: fake.HEAD_OID })).status, 409);
+  assert.equal((await post(prApiFor(2, 'retarget'), {})).status, 409);
+  assert.deepEqual(github.state.calls, []);
+
+  assert.equal((await post(prApiFor(1, 'merge'), { method: 'MERGE', expectedHeadOid: '1'.repeat(40), deleteBranch: true })).status, 200);
+  assert.deepEqual((await post(prApiFor(2, 'retarget'), {})).body, { baseRefName: 'main', moved: true, below: 1 });
+  const merged = await post(prApiFor(2, 'merge'), { method: 'MERGE', expectedHeadOid: fake.HEAD_OID });
+  assert.equal(merged.body.merged, true);
+  assert.equal((await post(prApiFor(3, 'retarget'), {})).status, 200);
+
+  assert.deepEqual(github.state.calls.map((call) => [call.name, call.input && (call.input.pullRequestId || call.input)]), [
+    ['mergePullRequest', 'PR_1'],
+    ['deleteRef', 'feat-a'],
+    ['updatePullRequest', 'PR_2'],
+    ['mergePullRequest', 'PR_2'],
+    ['updatePullRequest', 'PR_3'],
+  ]);
+  assert.equal(github.state.calls[0].input.mergeMethod, 'MERGE');
+  assert.equal(github.state.prs[3].baseRefName, 'main');
+});
+
+test('a ship refuses a head that moved and an unknown merge method', async () => {
+  github.state.prs[1].approved = true;
+  const moved = await post(prApiFor(1, 'merge'), { method: 'MERGE', expectedHeadOid: 'f'.repeat(40) });
+  assert.equal(moved.status, 422);
+  assert.match(moved.body.error, /Head branch was modified/);
+  assert.equal((await post(prApiFor(1, 'merge'), { method: 'FAST_FORWARD', expectedHeadOid: '1'.repeat(40) })).status, 400);
 });
 
 test('an unknown pull request is a 404', async () => {

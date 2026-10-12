@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="gh-arc-token" content="__GH_ARC_TOKEN__">
+  <meta name="gh-arc-home-repo" content="__GH_ARC_HOME_REPO__">
   <title>gh-arc</title>
   <link rel="stylesheet" href="/assets/viewer.css">
 </head>
@@ -31,6 +32,7 @@
           <button type="button" id="mode-unified" class="seg">Unified</button>
         </div>
         <button type="button" id="comments-toggle" class="toolbar-action">Hide comments</button>
+        <div id="status-nav" class="status-nav"></div>
         <button type="button" id="review-jump" class="primary-action">Review</button>
       </div>
     </header>
@@ -52,6 +54,7 @@
     </main>
   </div>
   <div id="toast" class="toast" role="status" hidden></div>
+  <script src="/assets/routes.js"></script>
   <script src="/assets/common.js"></script>
   <script src="/assets/patch-paths.js"></script>
   <script src="/assets/viewer.js"></script>

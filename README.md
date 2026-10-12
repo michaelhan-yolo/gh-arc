@@ -31,7 +31,7 @@ gh arc inbox                # needs your review, yours, reviewed by you
 gh arc serve                # start the server only
 ```
 
-One server on `127.0.0.1:7799` serves every pull request, and running `gh arc` again reuses it. Any pull request URL works with the host swapped: `github.com/o/r/pull/12` becomes `127.0.0.1:7799/o/r/pull/12`. Options: `-R owner/repo`, `-p <port>`, `--no-open`.
+Pages live at `http://localhost:7799/diffs/11505` for the repository you run `gh arc` in, which it remembers for next time, and at `/diffs/<owner>/<repo>/<number>` for any other. Run `gh arc setup` once and they live at **`http://diffs/11505`** instead, so typing `diffs/11505` in the address bar opens the pull request. One server serves every pull request, and running `gh arc` again reuses it. A GitHub pull request URL also works with the host swapped: `localhost:7799/o/r/pull/12` redirects to its `/diffs/` page. Options: `-R owner/repo`, `-p <port>`, `--no-open`.
 
 ## What you get
 
@@ -40,6 +40,7 @@ One server on `127.0.0.1:7799` serves every pull request, and running `gh arc` a
 - **The stack**: pull requests chained by base branch, drawn as a graph from the top of the stack down to the trunk, with each one's review state, checks and size. In the top bar, `‹ #n` and `#m ›` (or `[` and `]`) move down and up, and the `Stack 2/7` button (or `s`) opens the whole stack to jump to any pull request in it.
 - **Versions**, Phabricator's update history: one version per push, including heads a force push replaced. The `Versions · Base → V9` button in the top bar (or `v`) opens them; pick an old and a new version to see what changed between them. The comparison replays the old version's changes onto the new version's base, so a lower pull request merged up the stack in between drops out. Where base changes and the pull request touch the same lines, the file says so and shows both.
 - **Existing threads inline**, with resolve, unresolve and reply. Resolved threads start collapsed; outdated ones sit under the details with the hunk they were left on.
+- **Review status and Ship it**: the top bar says where a pull request stands: yellow *Under review*, red *Changes requested*, and once accepted, a green **Ship it**. Shipping a pull request higher in a stack lands the whole stack below it in one go, bottom first: each one merges into the trunk and the next moves onto the trunk before it merges, with every one required to be accepted, and the pull requests above move onto the trunk afterwards. The server moves a pull request onto the trunk only after the one below it has merged, so nothing unreviewed rides along. The sidebar, stack menu and inbox show the same status on every pull request.
 - **Phabricator-style review**: inline comments and replies stay drafts (saved in `~/.gh-arc/drafts`, so they survive a reload) until you submit them in one review as Comment, Accept or Request changes. A pending review you started on github.com goes out with it.
 - **Viewed files** sync with GitHub's checkbox and collapse. Lock files, generated files and diffs over 1,500 lines start collapsed.
 - **Narrower views**: one commit, or everything since your last review. You can comment on the right side when it's the head commit; other views are read-only.
@@ -51,13 +52,25 @@ Keys: `j` and `k` step through files, `[` and `]` walk the stack, `s` opens the 
 
 ## How it works
 
-`gh arc` starts a Node server on 127.0.0.1. The server reads your token once from `gh auth token` and calls GitHub's GraphQL and REST APIs; the token never reaches the page. Diffs come from the pull request diff endpoint, which falls back to the files API past GitHub's size limit. The stack comes from your repository's open pull requests, cached for a minute.
+`gh arc` starts a Node server listening on 127.0.0.1 only (`localhost` reaches it). The server reads your token once from `gh auth token` and calls GitHub's GraphQL and REST APIs; the token never reaches the page. Diffs come from the pull request diff endpoint, which falls back to the files API past GitHub's size limit. The stack comes from your repository's open pull requests, cached for a minute.
 
 GitHub keeps no log of pushes, but CI checks run only on the commit at the tip of each push, so commits with check suites mark the versions; force-pushed-away heads come from the pull request's timeline. A comparison between versions A and B fetches each changed file at A, B and both versions' merge bases, merges A's changes onto B's base, and diffs that against B.
+
+On your own pull requests there is nothing to accept or block: the Review button goes away and the panel posts your replies as comments.
 
 Submitting a review gets or creates your pending review on GitHub, adds each draft as a thread or reply, and then submits it with the action you chose. If GitHub rejects a draft (a line outside the diff, say), the draft stays local with the error, the rest wait in the pending review, and nothing is submitted until you resubmit.
 
 The server acts with your GitHub credentials, so it only answers requests addressed to `127.0.0.1` or `localhost`. Writes also need a token that is minted per server and embedded in the page, and the page runs under a CSP that allows only its own scripts.
+
+## `http://diffs/`
+
+`gh arc setup` (macOS) checks the machine, shows exactly what it will change, and asks before running anything with `sudo`:
+
+- `/etc/hosts` maps the name `diffs` to 127.0.0.1.
+- A packet-filter rule forwards 127.0.0.1 port 80 to gh-arc's port 7799. macOS won't let a normal program take port 80 on 127.0.0.1, and gh-arc won't listen on every interface, since it acts with your GitHub login. The rule goes into Apple's `com.apple/*` anchor point, so `/etc/pf.conf` is untouched.
+- A LaunchDaemon reloads the rule at startup. It runs only `/sbin/pfctl` on root-owned files; nothing from your home folder runs as root.
+
+`gh arc setup --dry-run` shows the plan and changes nothing; `gh arc setup --remove` undoes all of it. The rule sends everything on 127.0.0.1 port 80 to gh-arc. Under `diffs`, paths drop the `/diffs` prefix (`/11505`, `/<owner>/<repo>/<number>`); `localhost:7799/diffs/…` keeps working. `gh arc` prints `http://diffs/…` URLs once the name reaches it, and the `localhost` form otherwise.
 
 ## Limits
 

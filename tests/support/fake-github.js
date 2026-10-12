@@ -140,6 +140,14 @@ function createState() {
         comments: { nodes: [comment('C_old', 'bob', 'Rename v5?', '@@ -1,5 +1,5 @@\n const v1 = 1;\n-const v5 = 5;\n+const v5 = 50;')] },
       },
     ],
+    // Per pull request: where it sits, who wrote it, and whether it is accepted or merged.
+    prs: Object.fromEntries(STACK.concat(MINE).map((pr) => [pr.number, {
+      baseRefName: pr.baseRefName,
+      author: pr.number === 1 || MINE.includes(pr) ? 'me' : 'dana',
+      approved: false,
+      merged: false,
+      failMerge: false,
+    }])),
     calls: [],
   };
 }
@@ -172,23 +180,31 @@ const MINE = [
   { number: 30, title: 'Fix a typo', baseRefName: 'main', headRefName: 'typo' },
 ];
 
-function summary(pr) {
+function headOid(number) {
+  return number === 2 ? HEAD_OID : String(number).repeat(40).slice(0, 40);
+}
+
+function summary(state, pr) {
+  const live = state.prs[pr.number];
+  const onTrunk = live.baseRefName === 'main';
   return {
     id: `PR_${pr.number}`,
     number: pr.number,
     title: pr.title,
     url: `https://github.com/${OWNER}/${REPO}/pull/${pr.number}`,
-    state: 'OPEN',
+    state: live.merged ? 'MERGED' : 'OPEN',
     isDraft: pr.number === 3,
-    merged: false,
-    baseRefName: pr.baseRefName,
+    merged: live.merged,
+    baseRefName: live.baseRefName,
     headRefName: pr.headRefName,
     baseRefOid: BASE_OID,
-    headRefOid: pr.number === 2 ? HEAD_OID : String(pr.number).repeat(40).slice(0, 40),
+    headRefOid: headOid(pr.number),
     additions: 3,
     deletions: 2,
-    reviewDecision: 'REVIEW_REQUIRED',
-    author: actor('dana'),
+    reviewDecision: onTrunk ? (live.approved ? 'APPROVED' : 'REVIEW_REQUIRED') : null,
+    mergeStateStatus: onTrunk && !live.approved ? 'BLOCKED' : 'CLEAN',
+    latestOpinionatedReviews: { nodes: live.approved ? [{ state: 'APPROVED', submittedAt: '2026-10-02T11:00:00Z', author: actor('carol') }] : [] },
+    author: actor(live.author),
     lastCommit: { nodes: [{ commit: { statusCheckRollup: { state: 'SUCCESS' } } }] },
     updatedAt: '2026-10-02T10:00:00Z',
     repository: { nameWithOwner: `${OWNER}/${REPO}` },
@@ -196,21 +212,19 @@ function summary(pr) {
   };
 }
 
-function pullRequest(state) {
+function pullRequest(state, number) {
   return {
-    ...summary(STACK[1]),
+    ...summary(state, STACK.find((pr) => pr.number === number)),
     body: 'Renders the widgets.',
     bodyHTML: '<p>Renders the widgets. Stacked on <a href="https://github.com/octo/widgets/pull/1">#1</a>.</p>',
     mergedAt: null,
     createdAt: '2026-10-01T09:00:00Z',
     updatedAt: '2026-10-02T09:00:00Z',
     baseRefOid: BASE_OID,
-    headRefOid: HEAD_OID,
     changedFiles: 2,
     mergeable: 'MERGEABLE',
     labels: { nodes: [{ name: 'frontend', color: '1d76db' }] },
     reviewRequests: { nodes: [{ requestedReviewer: { __typename: 'User', login: 'me', avatarUrl: '' } }] },
-    latestOpinionatedReviews: { nodes: [] },
     pendingReviews: {
       nodes: state.pendingReview
         ? [{ id: state.pendingReview.id, author: actor(state.viewer), comments: { totalCount: state.pendingReview.threads.length } }]
@@ -280,6 +294,50 @@ function pullRequest(state) {
 function graphql(state, query, variables) {
   const input = variables && variables.input;
   const record = (name) => state.calls.push({ name, input });
+  const numberOf = (id) => Number(String(id).replace('PR_', ''));
+
+  if (query.includes('query ShipInfo')) {
+    const pr = STACK.concat(MINE).find((item) => item.number === variables.number);
+    const live = pr && state.prs[pr.number];
+    return {
+      repository: {
+        defaultBranchRef: { name: 'main' },
+        pullRequest: pr ? {
+          id: `PR_${pr.number}`,
+          number: pr.number,
+          state: live.merged ? 'MERGED' : 'OPEN',
+          merged: live.merged,
+          baseRefName: live.baseRefName,
+          headRefName: pr.headRefName,
+          headRefOid: headOid(pr.number),
+          author: actor(live.author),
+          headRepositoryOwner: { login: OWNER },
+        } : null,
+      },
+    };
+  }
+  if (query.includes('query MergedForHead')) {
+    const pr = STACK.concat(MINE).find((item) => item.headRefName === variables.head && state.prs[item.number].merged);
+    return { repository: { pullRequests: { nodes: pr ? [{ number: pr.number }] : [] } } };
+  }
+  if (query.includes('updatePullRequest(input')) {
+    record('updatePullRequest');
+    state.prs[numberOf(input.pullRequestId)].baseRefName = input.baseRefName;
+    return { updatePullRequest: { pullRequest: { number: numberOf(input.pullRequestId), baseRefName: input.baseRefName } } };
+  }
+  if (query.includes('mergePullRequest(input')) {
+    record('mergePullRequest');
+    const number = numberOf(input.pullRequestId);
+    const live = state.prs[number];
+    if (live.failMerge) {
+      return { errors: [{ message: 'Required status check "lint" is failing.' }] };
+    }
+    if (input.expectedHeadOid !== headOid(number)) {
+      return { errors: [{ message: 'Head branch was modified. Review and try the merge again.' }] };
+    }
+    live.merged = true;
+    return { mergePullRequest: { pullRequest: { number, merged: true, url: `https://github.com/${OWNER}/${REPO}/pull/${number}` } } };
+  }
 
   if (query.includes('addPullRequestReview(input')) {
     record('addPullRequestReview');
@@ -333,9 +391,9 @@ function graphql(state, query, variables) {
   if (query.includes('needsReview: search')) {
     return {
       viewer: { login: state.viewer },
-      needsReview: { nodes: STACK.slice(0, 3).map(summary) },
-      mine: { nodes: MINE.map(summary) },
-      reviewed: { nodes: [summary(STACK[3])] },
+      needsReview: { nodes: STACK.slice(0, 3).map((pr) => summary(state, pr)) },
+      mine: { nodes: MINE.map((pr) => summary(state, pr)) },
+      reviewed: { nodes: [summary(state, STACK[3])] },
     };
   }
   if (query.includes('pullRequests(states: OPEN')) {
@@ -343,7 +401,8 @@ function graphql(state, query, variables) {
       repository: {
         pullRequests: {
           pageInfo: { hasNextPage: false, endCursor: null },
-          nodes: STACK.map((pr) => ({ ...pr, headRepositoryOwner: { login: OWNER } })),
+          nodes: STACK.filter((pr) => !state.prs[pr.number].merged)
+            .map((pr) => ({ ...pr, baseRefName: state.prs[pr.number].baseRefName, headRepositoryOwner: { login: OWNER } })),
         },
       },
     };
@@ -353,8 +412,8 @@ function graphql(state, query, variables) {
     const aliases = query.match(/pr\d+: pullRequest\(number: \d+\)/g) || [];
     aliases.forEach((alias) => {
       const [, key, number] = alias.match(/(pr\d+): pullRequest\(number: (\d+)\)/);
-      const pr = STACK.find((item) => item.number === Number(number));
-      repository[key] = pr ? summary(pr) : null;
+      const pr = STACK.concat(MINE).find((item) => item.number === Number(number));
+      repository[key] = pr ? summary(state, pr) : null;
     });
     return { repository };
   }
@@ -380,12 +439,20 @@ function graphql(state, query, variables) {
     };
   }
   if (query.includes('pendingReviews: reviews')) {
-    if (variables.number !== 2) {
-      return { viewer: { login: state.viewer }, repository: { nameWithOwner: `${OWNER}/${REPO}`, defaultBranchRef: { name: 'main' }, pullRequest: null } };
-    }
+    const known = [1, 2, 3].includes(variables.number);
     return {
       viewer: { login: state.viewer },
-      repository: { nameWithOwner: `${OWNER}/${REPO}`, defaultBranchRef: { name: 'main' }, pullRequest: pullRequest(state) },
+      repository: {
+        nameWithOwner: `${OWNER}/${REPO}`,
+        defaultBranchRef: { name: 'main' },
+        viewerPermission: 'WRITE',
+        mergeCommitAllowed: true,
+        squashMergeAllowed: true,
+        rebaseMergeAllowed: true,
+        viewerDefaultMergeMethod: 'MERGE',
+        deleteBranchOnMerge: false,
+        pullRequest: known ? pullRequest(state, variables.number) : null,
+      },
     };
   }
   return { errors: [{ message: `fake-github: unhandled query ${query.slice(0, 80)}` }] };
@@ -393,7 +460,12 @@ function graphql(state, query, variables) {
 
 function rest(state, method, pathname, search, accept) {
   const prefix = `/repos/${OWNER}/${REPO}`;
-  if (pathname === `${prefix}/pulls/2` && accept.includes('diff')) {
+  const ref = pathname.match(new RegExp(`^${prefix}/git/refs/heads/(.+)$`));
+  if (ref && method === 'DELETE') {
+    state.calls.push({ name: 'deleteRef', input: decodeURIComponent(ref[1]) });
+    return { status: 204, type: 'text/plain', body: '' };
+  }
+  if (/^\/repos\/octo\/widgets\/pulls\/[123]$/.test(pathname) && accept.includes('diff')) {
     return { type: 'text/plain', body: PR2_DIFF };
   }
   const compare = pathname.match(new RegExp(`^${prefix}/compare/([0-9a-f]+)\\.\\.\\.([0-9a-f]+)$`));

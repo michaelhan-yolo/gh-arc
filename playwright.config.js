@@ -9,5 +9,6 @@ module.exports = defineConfig({
   use: {
     headless: true,
     viewport: { width: 1400, height: 900 },
+    launchOptions: { args: ['--host-resolver-rules=MAP diffs 127.0.0.1'] },
   },
 });

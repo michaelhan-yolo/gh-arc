@@ -3,6 +3,15 @@
 (function () {
   const tokenMeta = document.querySelector('meta[name="gh-arc-token"]');
   const token = tokenMeta ? tokenMeta.getAttribute('content') : '';
+  const homeMeta = document.querySelector('meta[name="gh-arc-home-repo"]');
+  const homeRepo = homeMeta ? homeMeta.getAttribute('content') || null : null;
+  const routes = window.GhArcRoutes;
+
+  const short = routes.isAliasHost(window.location.hostname);
+
+  function diffPath(repo, number) {
+    return routes.diffPath(repo, number, homeRepo, short);
+  }
 
   async function api(path, options = {}) {
     const init = { method: options.method || 'GET', headers: {} };
@@ -81,15 +90,29 @@
     return `<span class="state-badge state-${key.toLowerCase()}">${STATE_LABELS[key]}</span>`;
   }
 
-  const DECISIONS = {
-    APPROVED: ['Accepted', 'decision-approved'],
-    CHANGES_REQUESTED: ['Changes requested', 'decision-changes'],
-    REVIEW_REQUIRED: ['Needs review', 'decision-required'],
+  // Review status, Phabricator style: label, tone (a CSS class suffix) and a one-glyph mark.
+  const STATUSES = {
+    UNDER_REVIEW: ['Under review', 'review', '●'],
+    ACCEPTED: ['Accepted', 'accepted', '✓'],
+    CHANGES_REQUESTED: ['Changes requested', 'changes', '✕'],
+    DRAFT: ['Draft', 'draft', '◌'],
+    MERGED: ['Merged', 'merged', '●'],
+    CLOSED: ['Closed', 'closed', '⊘'],
   };
 
-  function decisionChip(decision) {
-    const entry = DECISIONS[decision];
-    return entry ? `<span class="decision-chip ${entry[1]}">${entry[0]}</span>` : '';
+  function statusInfo(status) {
+    const [label, tone, mark] = STATUSES[status] || STATUSES.UNDER_REVIEW;
+    return { label, tone, mark };
+  }
+
+  function statusChip(status) {
+    const { label, tone } = statusInfo(status);
+    return `<span class="status-chip status-${tone}">${label}</span>`;
+  }
+
+  function statusMark(status) {
+    const { label, tone, mark } = statusInfo(status);
+    return `<span class="status-mark status-${tone}" title="${label}" aria-label="${label}">${mark}</span>`;
   }
 
   const CHECK_LABELS = {
@@ -113,7 +136,7 @@
   // Pull request links inside GitHub-rendered markdown open here; everything else opens in a new tab.
   function localPrPath(href) {
     const match = String(href).match(/^https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)(?:\/files)?\/?(#.*)?$/);
-    return match && !match[4] ? `/${match[1]}/${match[2]}/pull/${match[3]}` : null;
+    return match && !match[4] ? diffPath(`${match[1]}/${match[2]}`, match[3]) : null;
   }
 
   function prepareLinks(root) {
@@ -133,12 +156,16 @@
     api,
     avatar,
     checksIcon,
-    decisionChip,
+    diffPath,
+    homeRepo,
     escapeHtml,
     localPrPath,
     prepareLinks,
     relativeTime,
     stateBadge,
+    statusChip,
+    statusInfo,
+    statusMark,
     time,
   };
 }());

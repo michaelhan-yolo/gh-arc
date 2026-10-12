@@ -18,26 +18,30 @@ test.beforeAll(async () => {
   process.env.GH_ARC_API_URL = github.url;
   process.env.GH_ARC_TOKEN = 'test-token';
   process.env.GH_ARC_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'gh-arc-e2e-'));
+});
+
+test.afterAll(async () => {
+  await github.close();
+});
+
+// A fresh server per test, so its stack and inbox caches start from the reset GitHub.
+test.beforeEach(async () => {
+  github.reset();
+  fs.rmSync(path.join(process.env.GH_ARC_HOME, 'drafts'), { recursive: true, force: true });
   const { createServer } = require('../../lib/server');
-  app = createServer();
+  app = createServer({ homeRepo: 'octo/widgets' });
   const port = await app.listen(0, '127.0.0.1', true);
   base = `http://127.0.0.1:${port}`;
 });
 
-test.afterAll(async () => {
+test.afterEach(async () => {
   await app.close();
-  await github.close();
-});
-
-test.beforeEach(() => {
-  github.reset();
-  fs.rmSync(path.join(process.env.GH_ARC_HOME, 'drafts'), { recursive: true, force: true });
 });
 
 const callNames = () => github.state.calls.map((call) => call.name);
 
 test('reviews a stacked pull request: drafts, a range, a reply, then one submitted review', async ({ page }) => {
-  await page.goto(`${base}/octo/widgets/pull/2`);
+  await page.goto(`${base}/diffs/2`);
   await expect(page.locator('.pr-title')).toHaveText('Render widgets');
   await expect(page.locator('#stack-nav')).toContainText('Stack 2/3');
   await expect(page.locator('.side-group.current .side-stack-row')).toHaveCount(4);
@@ -90,7 +94,7 @@ test('reviews a stacked pull request: drafts, a range, a reply, then one submitt
 });
 
 test('drafts survive a reload, and a rejected one shows its error', async ({ page }) => {
-  await page.goto(`${base}/octo/widgets/pull/2`);
+  await page.goto(`${base}/diffs/2`);
   const source = page.locator('article.file', { hasText: 'src/app.js' });
   await source.locator('[data-line-handle][data-side="new"][data-line="21"]').click();
   await page.locator('[data-comment-text]').fill('[fail] GitHub rejects this one');
@@ -107,7 +111,7 @@ test('drafts survive a reload, and a rejected one shows its error', async ({ pag
 });
 
 test('context expands from the merge base, files mark viewed, threads resolve', async ({ page }) => {
-  await page.goto(`${base}/octo/widgets/pull/2`);
+  await page.goto(`${base}/diffs/2`);
   const source = page.locator('article.file', { hasText: 'src/app.js' });
   await source.locator('[data-context="after"]').first().click();
   await expect(source.locator('td.code', { hasText: 'const v15 = 15;' })).toHaveCount(2);
@@ -126,7 +130,7 @@ test('context expands from the merge base, files mark viewed, threads resolve', 
 });
 
 test('keys walk the stack and the changes picker narrows the diff', async ({ page }) => {
-  await page.goto(`${base}/octo/widgets/pull/2`);
+  await page.goto(`${base}/diffs/2`);
   await expect(page.locator('#stack-nav')).toBeVisible();
   await page.locator('[data-range-select]').selectOption('since');
   await expect(page).toHaveURL(new RegExp(`diff=${fake.LAST_REVIEWED_OID}..${fake.HEAD_OID}`));
@@ -135,15 +139,15 @@ test('keys walk the stack and the changes picker narrows the diff', async ({ pag
   await expect(page.locator('[data-line-handle][data-side="new"]').first()).toBeVisible();
 
   await page.locator('body').press(']');
-  await expect(page).toHaveURL(`${base}/octo/widgets/pull/3`);
-  await page.goto(`${base}/octo/widgets/pull/2`);
+  await expect(page).toHaveURL(`${base}/diffs/3`);
+  await page.goto(`${base}/diffs/2`);
   await expect(page.locator('#stack-nav')).toBeVisible();
   await page.locator('body').press('[');
-  await expect(page).toHaveURL(`${base}/octo/widgets/pull/1`);
+  await expect(page).toHaveURL(`${base}/diffs/1`);
 });
 
 test('two versions compare without the base changes merged in between', async ({ page }) => {
-  await page.goto(`${base}/octo/widgets/pull/2`);
+  await page.goto(`${base}/diffs/2`);
   const toggle = page.locator('[data-versions-menu-toggle]');
   await expect(toggle).toHaveText(/Base → V3/);
   await expect(page.locator('.versions-table')).toHaveCount(0);
@@ -159,7 +163,7 @@ test('two versions compare without the base changes merged in between', async ({
   await expect(table.locator(`input[data-version-pick="to"][value="${fake.FORCED_OID}"]`)).toBeDisabled();
   await table.locator(`input[data-version-pick="from"][value="${fake.LAST_REVIEWED_OID}"]`).check();
   await page.locator('[data-versions-show]').click();
-  await expect(page).toHaveURL(`${base}/octo/widgets/pull/2?diff=${fake.LAST_REVIEWED_OID}..${fake.HEAD_OID}`);
+  await expect(page).toHaveURL(`${base}/diffs/2?diff=${fake.LAST_REVIEWED_OID}..${fake.HEAD_OID}`);
 
   await expect(page.locator('[data-versions-menu-toggle]')).toHaveText(/V2 → V3/);
   await expect(page.locator('.range-banner')).toContainText('what changed from V2');
@@ -171,12 +175,12 @@ test('two versions compare without the base changes merged in between', async ({
   await expect(source.locator('[data-context]')).toHaveCount(0);
   await expect(page.locator('.file-title', { hasText: 'docs/old.md → docs/new.md' })).toBeVisible();
 
-  await page.goto(`${base}/octo/widgets/pull/2?diff=${fake.LAST_REVIEWED_OID}..${fake.LAST_REVIEWED_OID}`);
+  await page.goto(`${base}/diffs/2?diff=${fake.LAST_REVIEWED_OID}..${fake.LAST_REVIEWED_OID}`);
   await expect(page.locator('.empty')).toContainText('V2 and V2 differ only by what was merged in from the base');
 });
 
 test('the stack button opens a menu of the whole stack', async ({ page }) => {
-  await page.goto(`${base}/octo/widgets/pull/2`);
+  await page.goto(`${base}/diffs/2`);
   await page.locator('[data-stack-menu-toggle]').click();
   const menu = page.locator('.stack-menu');
   await expect(menu.locator('a.stack-menu-item .stack-number')).toHaveText(['#3', '#2', '#1']);
@@ -194,11 +198,11 @@ test('the stack button opens a menu of the whole stack', async ({ page }) => {
   await page.locator('[data-stack-menu-toggle]').click();
   await expect(page.locator('.versions-menu')).toHaveCount(0);
   await page.locator('.stack-menu a', { hasText: 'Animate widgets' }).click();
-  await expect(page).toHaveURL(`${base}/octo/widgets/pull/3`);
+  await expect(page).toHaveURL(`${base}/diffs/3`);
 });
 
 test('the sidebar lists your stacks, with the one on screen open to its files', async ({ page }) => {
-  await page.goto(`${base}/octo/widgets/pull/2`);
+  await page.goto(`${base}/diffs/2`);
   const sidebar = page.locator('#sidebar-stack');
   await expect(sidebar.locator('.side-stack-heading')).toHaveText([/Viewing/, /Your stacks\s*2/]);
   const current = sidebar.locator('.side-group.current');
@@ -218,11 +222,11 @@ test('the sidebar lists your stacks, with the one on screen open to its files', 
   await page.reload();
   await expect(sidebar.locator('.side-group', { hasText: 'Widget docs' }).first()).not.toHaveClass(/collapsed/);
   await sidebar.locator('a.side-stack-row', { hasText: '#20' }).click();
-  await expect(page).toHaveURL(`${base}/octo/widgets/pull/20`);
+  await expect(page).toHaveURL(`${base}/diffs/20`);
 });
 
 test('the handle between your stacks and the files resizes them and remembers where it was', async ({ page }) => {
-  await page.goto(`${base}/octo/widgets/pull/2`);
+  await page.goto(`${base}/diffs/2`);
   const stacks = page.locator('#sidebar-stack');
   const handle = page.locator('#sidebar-split');
   await expect(page.locator('.side-group.current')).toBeVisible();
@@ -244,6 +248,89 @@ test('the handle between your stacks and the files resizes them and remembers wh
   await expect.poll(async () => (await stacks.boundingBox()).height / sidebar.height).toBeGreaterThan(0.6);
 });
 
+const shipCalls = () => github.state.calls
+  .filter((call) => ['mergePullRequest', 'updatePullRequest', 'deleteRef'].includes(call.name))
+  .map((call) => `${call.name} ${typeof call.input === 'string' ? call.input : call.input.pullRequestId}`);
+
+test('a pull request under review shows a yellow status, and reviewers get the review tools', async ({ page }) => {
+  await page.goto(`${base}/diffs/2`);
+  const status = page.locator('[data-status-toggle]');
+  await expect(status).toHaveText('Under review');
+  await expect(status).toHaveClass(/status-review/);
+  await expect(page.locator('#review-jump')).toBeVisible();
+  await status.click();
+  await expect(page.locator('.status-popover')).toContainText('Ship it shows up here once a reviewer accepts.');
+  await expect(page.locator('.status-popover .reviewer')).toContainText('me');
+  await expect(page.locator('.side-group.current .side-stack-row.current .status-mark')).toHaveClass(/status-review/);
+});
+
+test('your own accepted pull request hides the review tools and ships with one click', async ({ page }) => {
+  github.state.prs[1].approved = true;
+  await page.goto(`${base}/diffs/1`);
+  await expect(page.locator('.pr-title')).toHaveText('Add the widget model');
+  await expect(page.locator('#review-jump')).toBeHidden();
+  await expect(page.locator('#review-panel .metadata-header')).toContainText('Comments');
+  await expect(page.locator('[data-review-event]')).toHaveCount(0);
+  await expect(page.locator('[data-review-submit]')).toHaveText('Post comments');
+
+  const ship = page.locator('[data-status-toggle]');
+  await expect(ship).toHaveText('Ship it');
+  await expect(ship).not.toHaveClass(/blocked/);
+  await ship.click();
+  const popover = page.locator('.status-popover');
+  await expect(popover.locator('.ship-heading')).toHaveText(/Ship #1 into main/);
+  await expect(popover).toContainText('Afterwards #2 moves onto main.');
+  await expect(popover.locator('[data-ship-method]')).toHaveText(['Merge commit', 'Squash', 'Rebase']);
+  await popover.locator('[data-ship-confirm]').click();
+  await expect(page.locator('#toast')).toContainText('Shipped #1 into main.');
+  await expect(page.locator('[data-status-toggle]')).toHaveText('Merged');
+  expect(shipCalls()).toEqual(['mergePullRequest PR_1', 'updatePullRequest PR_2']);
+});
+
+test('shipping higher in the stack lands everything below it first', async ({ page }) => {
+  github.state.prs[1].approved = true;
+  github.state.prs[2].approved = true;
+  await page.goto(`${base}/diffs/2`);
+  const ship = page.locator('[data-status-toggle]');
+  await expect(ship).toHaveText(/Ship it\s*2/);
+  await ship.click();
+  const popover = page.locator('.status-popover');
+  await expect(popover.locator('.ship-heading')).toHaveText(/Ship 2 pull requests, bottom first, into main/);
+  await expect(popover.locator('.ship-item .side-stack-number')).toHaveText(['#1', '#2']);
+  await expect(popover.locator('[data-ship-method]')).toHaveText(['Merge commit', 'Squash']);
+  await popover.locator('[data-ship-delete]').check();
+  await popover.locator('[data-ship-confirm]').click();
+  await expect(page.locator('#toast')).toContainText('Shipped #1, #2 into main.');
+  expect(shipCalls()).toEqual([
+    'mergePullRequest PR_1',
+    'deleteRef feat-a',
+    'updatePullRequest PR_2',
+    'mergePullRequest PR_2',
+    'deleteRef feat-b',
+    'updatePullRequest PR_3',
+  ]);
+  expect(github.state.prs[3].baseRefName).toBe('main');
+});
+
+test('ship it waits on every pull request below, and stops at the first failure', async ({ page }) => {
+  github.state.prs[2].approved = true;
+  await page.goto(`${base}/diffs/2`);
+  const ship = page.locator('[data-status-toggle]');
+  await expect(ship).toHaveClass(/blocked/);
+  await ship.click();
+  await expect(page.locator('.ship-blocked')).toHaveText('Waiting on #1 to be accepted.');
+  await expect(page.locator('[data-ship-confirm]')).toBeDisabled();
+
+  github.state.prs[1].approved = true;
+  github.state.prs[2].failMerge = true;
+  await page.reload();
+  await page.locator('[data-status-toggle]').click();
+  await page.locator('[data-ship-confirm]').click();
+  await expect(page.locator('#toast')).toContainText('Shipped #1; the next one failed.');
+  await expect(page.locator('.ship-item.ship-failed')).toContainText('Required status check "lint" is failing.');
+  expect(shipCalls()).toEqual(['mergePullRequest PR_1', 'updatePullRequest PR_2', 'mergePullRequest PR_2']);
+});
+
 test('the inbox draws each stack top first over its trunk', async ({ page }) => {
   await page.goto(`${base}/`);
   const stack = page.locator('.inbox-section', { hasText: 'Needs your review' }).locator('.inbox-group.is-stack');
@@ -251,5 +338,20 @@ test('the inbox draws each stack top first over its trunk', async ({ page }) => 
   await expect(stack.locator('.inbox-trunk')).toHaveText('main');
   await page.locator('#open-input').fill('https://github.com/octo/widgets/pull/2/files');
   await page.locator('#open-input').press('Enter');
-  await expect(page).toHaveURL(`${base}/octo/widgets/pull/2`);
+  await expect(page).toHaveURL(`${base}/diffs/2`);
+});
+
+// playwright.config.js maps the diffs host to 127.0.0.1 in Chromium, as gh arc setup does for the Mac.
+test.describe('under the diffs host', () => {
+  test('pages live at diffs/<number> and every link stays short', async ({ page }) => {
+    const port = new URL(base).port;
+    await page.goto(`http://diffs:${port}/2`);
+    await expect(page.locator('.pr-title')).toHaveText('Render widgets');
+    await expect(page.locator('#stack-nav a.stack-step')).toHaveText(['‹ #1', '#3 ›']);
+    expect(await page.locator('#stack-nav a.stack-step').evaluateAll((links) => links.map((link) => link.getAttribute('href')))).toEqual(['/1', '/3']);
+    await expect(page.locator('#sidebar-stack a.side-stack-row').first()).toHaveAttribute('href', '/3');
+    await expect(page.locator('.diff-description a')).toHaveAttribute('href', '/1');
+    await page.locator('body').press(']');
+    await expect(page).toHaveURL(`http://diffs:${port}/3`);
+  });
 });

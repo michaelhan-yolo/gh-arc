@@ -1,7 +1,7 @@
 'use strict';
 
 (function () {
-  const { api, avatar, checksIcon, decisionChip, escapeHtml, stateBadge, time } = window.GhArc;
+  const { api, avatar, checksIcon, diffPath, escapeHtml, homeRepo, statusChip, time } = window.GhArc;
   const inbox = document.getElementById('inbox');
   const form = document.getElementById('open-form');
   const input = document.getElementById('open-input');
@@ -21,12 +21,12 @@
   load();
 
   function targetPath(value) {
-    const url = value.match(/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)/);
-    if (url) {
-      return `/${url[1]}/${url[2]}/pull/${url[3]}`;
+    const reference = window.GhArcRoutes.parseReference(value);
+    if (reference) {
+      return diffPath(reference.repo, reference.number);
     }
-    const short = value.match(/^([\w.-]+)\/([\w.-]+)#(\d+)$/);
-    return short ? `/${short[1]}/${short[2]}/pull/${short[3]}` : null;
+    const number = value.match(/^#?(\d+)$/);
+    return number && homeRepo ? diffPath(homeRepo, number[1]) : null;
   }
 
   async function load() {
@@ -68,12 +68,12 @@
   function renderRow(repo, item) {
     const pr = item.pr;
     return `
-      <a class="inbox-row" href="/${escapeHtml(repo)}/pull/${pr.number}" style="--lane: ${item.lane}">
+      <a class="inbox-row" href="${escapeHtml(diffPath(repo, pr.number))}" style="--lane: ${item.lane}">
         <span class="stack-graph" aria-hidden="true"><span class="stack-dot"></span></span>
         <span class="inbox-repo" title="${escapeHtml(repo)}">${escapeHtml(repo.split('/')[1])}</span>
         <span class="inbox-number">#${pr.number}</span>
         <span class="inbox-title">${escapeHtml(pr.title)}</span>
-        <span class="inbox-badges">${pr.state === 'OPEN' ? '' : stateBadge(pr.state)}${decisionChip(pr.reviewDecision)}${checksIcon(pr.checks)}</span>
+        <span class="inbox-badges">${statusChip(pr.reviewStatus)}${checksIcon(pr.checks)}</span>
         <span class="inbox-author">${avatar(pr.author, 18)}${escapeHtml(pr.author.login)}</span>
         <span class="stat"><span class="add">+${pr.additions}</span> <span class="del">-${pr.deletions}</span></span>
         <span class="inbox-updated">${time(pr.updatedAt)}</span>

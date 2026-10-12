@@ -3,7 +3,7 @@
 // The diff engine (patch parsing, split/unified tables, context expansion, range selection)
 // comes from local-arc (MIT, Emerson Ding). The GitHub layer around it is gh-arc's.
 (function () {
-  const { api, avatar, checksIcon, decisionChip, escapeHtml, prepareLinks, stateBadge, time } = window.GhArc;
+  const { api, avatar, checksIcon, diffPath, escapeHtml, homeRepo, prepareLinks, stateBadge, statusChip, statusInfo, statusMark, time } = window.GhArc;
   const { applyHeaderLine, parseDiffGitLine } = window.GhArcPatchPaths;
   const escapeAttr = escapeHtml;
   const LARGE_FILE_LINES = 1500;
@@ -49,6 +49,8 @@
     stackMenuOpen: false,
     versionsMenuOpen: false,
     inbox: null,
+    statusOpen: false,
+    ship: { method: null, deleteBranch: null, running: false, progress: {}, errors: {} },
     openStacks: new Set(readStoredList('ghArcOpenStacks')),
     closedStacks: new Set(),
   };
@@ -65,6 +67,7 @@
     unified: document.getElementById('mode-unified'),
     commentsToggle: document.getElementById('comments-toggle'),
     reviewJump: document.getElementById('review-jump'),
+    statusNav: document.getElementById('status-nav'),
     stackNav: document.getElementById('stack-nav'),
     versionsNav: document.getElementById('versions-nav'),
     resizer: document.getElementById('sidebar-resizer'),
@@ -77,8 +80,9 @@
   // ---------------------------------------------------------------- data
 
   function parseRoute() {
-    const match = window.location.pathname.match(/^\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
-    return { owner: match[1], repo: match[2], number: Number(match[3]) };
+    const route = window.GhArcRoutes.parseDiffPath(window.location.pathname, homeRepo);
+    const [owner, repo] = route.repo.split('/');
+    return { owner, repo, number: route.number };
   }
 
   function parseRange() {
@@ -118,7 +122,7 @@
   }
 
   function prPath(number) {
-    return `/${ROUTE.owner}/${ROUTE.repo}/pull/${number}`;
+    return diffPath(`${ROUTE.owner}/${ROUTE.repo}`, number);
   }
 
   async function boot() {
@@ -157,6 +161,7 @@
     renderStackNav();
     if (state.data) {
       renderSidebar();
+      renderStatusNav();
     }
   }
 
@@ -342,9 +347,28 @@
         renderVersionsNav();
       }
     });
+    el.statusNav.addEventListener('click', (event) => {
+      const method = event.target.closest('[data-ship-method]');
+      if (event.target.closest('[data-status-toggle]')) {
+        setStatusPopover(!state.statusOpen);
+      } else if (method) {
+        state.ship.method = method.getAttribute('data-ship-method');
+        renderStatusNav();
+      } else if (event.target.closest('[data-ship-confirm]')) {
+        shipStack();
+      }
+    });
+    el.statusNav.addEventListener('change', (event) => {
+      if (event.target.matches('[data-ship-delete]')) {
+        state.ship.deleteBranch = event.target.checked;
+      }
+    });
     document.addEventListener('click', (event) => {
       if (!event.target.isConnected) {
         return;
+      }
+      if (state.statusOpen && !el.statusNav.contains(event.target)) {
+        setStatusPopover(false, false);
       }
       if (state.stackMenuOpen && !el.stackNav.contains(event.target)) {
         setStackMenu(false, false);
@@ -521,6 +545,11 @@
     if (event.metaKey || event.ctrlKey || event.altKey) {
       return;
     }
+    if (state.statusOpen && event.key === 'Escape') {
+      event.preventDefault();
+      setStatusPopover(false);
+      return;
+    }
     if (state.versionsMenuOpen && event.key === 'Escape') {
       event.preventDefault();
       setVersionsMenu(false);
@@ -691,6 +720,7 @@
     renderHeader();
     renderStackNav();
     renderVersionsNav();
+    renderStatusNav();
     updateCommentsToggle();
     updateReviewJump();
     renderSidebar();
@@ -753,7 +783,7 @@
           <span class="stack-graph" aria-hidden="true"><span class="stack-dot"></span></span>
           <span class="stack-number">#${entry.number}</span>
           <span class="stack-title">${escapeHtml(entry.title)}</span>
-          <span class="stack-menu-badges">${entry.state === 'OPEN' ? '' : stateBadge(entry.state)}${decisionChip(entry.reviewDecision)}${checksIcon(entry.checks)}</span>
+          <span class="stack-menu-badges">${statusChip(entry.reviewStatus)}${checksIcon(entry.checks)}</span>
         </a>
       `;
     }).join('');
@@ -774,6 +804,9 @@
     }
     if (open && state.versionsMenuOpen) {
       setVersionsMenu(false, false);
+    }
+    if (open && state.statusOpen) {
+      setStatusPopover(false, false);
     }
     state.stackMenuOpen = open;
     renderStackNav();
@@ -818,7 +851,12 @@
     el.commentsToggle.textContent = `${state.commentsVisible ? 'Hide' : 'Show'} comments${count ? ` (${count})` : ''}`;
   }
 
+  function isOwnPr() {
+    return state.data.pr.author.login === state.data.viewer;
+  }
+
   function updateReviewJump() {
+    el.reviewJump.hidden = isOwnPr();
     const drafts = state.drafts.threads.length + state.drafts.replies.length;
     el.reviewJump.innerHTML = `Review${drafts ? ` <span class="badge">${drafts}</span>` : ''}`;
     el.reviewJump.title = drafts ? `${drafts} unsubmitted comment${drafts === 1 ? '' : 's'}` : 'Write and submit a review';
@@ -864,6 +902,246 @@
       node.scrollIntoView({ block: 'center' });
       setActiveComment(id);
     }
+  }
+
+  // ---------------------------------------------------------------- status and shipping
+
+  const MERGE_BLOCKERS = {
+    DIRTY: 'has merge conflicts',
+    BEHIND: 'is behind its base; update the branch first',
+    BLOCKED: 'is blocked by branch protection (required checks or reviews)',
+    UNKNOWN: 'is still being checked by GitHub; reload in a moment',
+    DRAFT: 'is a draft',
+  };
+  const METHOD_LABELS = { MERGE: 'Merge commit', SQUASH: 'Squash', REBASE: 'Rebase' };
+  const STATUS_NOTES = {
+    UNDER_REVIEW: 'Ship it shows up here once a reviewer accepts.',
+    CHANGES_REQUESTED: 'A reviewer asked for changes. Push them and ask for another look.',
+    DRAFT: 'Mark it ready for review on GitHub to ask for reviews.',
+    MERGED: 'Shipped.',
+    CLOSED: 'Closed without merging.',
+  };
+
+  function prApiFor(number, action) {
+    return `/api/pr/${ROUTE.owner}/${ROUTE.repo}/${number}/${action}`;
+  }
+
+  // What a ship lands: the stack below this pull request, bottom first, then this one.
+  function shipPath() {
+    const pr = state.data.pr;
+    const self = {
+      number: pr.number,
+      title: pr.title,
+      reviewStatus: pr.reviewStatus,
+      baseRefName: pr.baseRefName,
+      headRefOid: pr.headRefOid,
+      mergeStateStatus: pr.mergeStateStatus,
+    };
+    const stack = state.stack && !state.stack.error ? state.stack : null;
+    if (!stack) {
+      return [self];
+    }
+    const byNumber = new Map(stack.entries.map((entry) => [entry.number, entry]));
+    const path = [self];
+    let parent = byNumber.has(pr.number) ? byNumber.get(pr.number).parent : null;
+    while (parent && byNumber.has(parent)) {
+      const entry = byNumber.get(parent);
+      path.unshift(entry);
+      parent = entry.parent;
+    }
+    return path;
+  }
+
+  // Rebasing rewrites the commits the pull requests above depend on, so a stack ships by merge
+  // commit or squash.
+  function shipMethods(path) {
+    return state.data.repo.mergeMethods.filter((method) => path.length === 1 || method !== 'REBASE');
+  }
+
+  function currentShipMethod(methods) {
+    const preferred = state.ship.method || state.data.repo.defaultMergeMethod;
+    return methods.includes(preferred) ? preferred : methods[0];
+  }
+
+  function shipState() {
+    const { repo } = state.data;
+    const path = shipPath();
+    const bottom = path[0];
+    const base = repo.defaultBranch;
+    const children = state.stack && !state.stack.error ? state.stack.children : [];
+    const waiting = path.filter((entry) => entry.reviewStatus !== 'ACCEPTED');
+    let reason = '';
+    if (!['WRITE', 'MAINTAIN', 'ADMIN'].includes(repo.viewerPermission)) {
+      reason = "You don't have write access to this repository.";
+    } else if (!state.stack && bottom.baseRefName !== base) {
+      reason = 'Finding the stack below it…';
+    } else if (state.stack && state.stack.error && bottom.baseRefName !== base) {
+      reason = "Couldn't load the stack below it.";
+    } else if (waiting.length) {
+      reason = `Waiting on ${waiting.map((entry) => `#${entry.number}`).join(', ')} to be accepted.`;
+    } else if (bottom.baseRefName === base && MERGE_BLOCKERS[bottom.mergeStateStatus]) {
+      reason = `#${bottom.number} ${MERGE_BLOCKERS[bottom.mergeStateStatus]}.`;
+    } else if (!shipMethods(path).length) {
+      reason = 'This repository allows no merge method that keeps a stack intact.';
+    }
+    return { path, ready: !reason, reason, children, base };
+  }
+
+  // Under review, changes requested and the rest show as a status button; accepted turns it into
+  // Ship it. Either opens the popover with reviewers, checks and, once accepted, the ship plan.
+  function renderStatusNav() {
+    const pr = state.data.pr;
+    const { label, tone } = statusInfo(pr.reviewStatus);
+    const ship = pr.reviewStatus === 'ACCEPTED' ? shipState() : null;
+    const button = ship
+      ? `<button type="button" class="ship-it${ship.ready ? '' : ' blocked'}" data-status-toggle aria-haspopup="dialog"
+          aria-expanded="${state.statusOpen}" title="${escapeAttr(ship.ready ? `Ship into ${ship.base}` : `Accepted. ${ship.reason}`)}">Ship it${ship.path.length > 1 ? ` <span class="ship-count">${ship.path.length}</span>` : ''}</button>`
+      : `<button type="button" class="status-button status-${tone}" data-status-toggle aria-haspopup="dialog"
+          aria-expanded="${state.statusOpen}" title="Review status">${escapeHtml(label)}</button>`;
+    el.statusNav.innerHTML = button +
+      (state.statusOpen ? `<div class="status-popover" role="dialog" aria-label="Review status">${renderStatusPopover(ship)}</div>` : '');
+  }
+
+  function renderStatusPopover(ship) {
+    const pr = state.data.pr;
+    const checks = pr.checks ? checksSummary(pr.checks) : null;
+    return `
+      <div class="status-popover-head">${statusChip(pr.reviewStatus)}<span class="muted">#${pr.number} by ${escapeHtml(pr.author.login)}</span></div>
+      <dl class="status-facts">
+        <dt>Reviewers</dt><dd>${renderReviewers(pr.reviewers)}</dd>
+        <dt>Checks</dt><dd>${checks ? `${checksIcon(checks.overall)} ${checks.text || 'None'}` : '<span class="muted">No checks</span>'}</dd>
+      </dl>
+      ${ship ? renderShipSection(ship) : `<p class="muted status-note">${STATUS_NOTES[pr.reviewStatus] || ''}</p>`}
+    `;
+  }
+
+  function renderShipSection(ship) {
+    const { repo, pr } = state.data;
+    const methods = shipMethods(ship.path);
+    const method = currentShipMethod(methods);
+    const deleteBranch = state.ship.deleteBranch === null ? repo.deleteBranchOnMerge : state.ship.deleteBranch;
+    const running = state.ship.running;
+    const many = ship.path.length > 1;
+    const icons = { running: '◐', done: '✓', failed: '✕' };
+    const rows = ship.path.map((entry) => {
+      const progress = state.ship.progress[entry.number];
+      const error = state.ship.errors[entry.number];
+      return `
+        <li class="ship-item${progress ? ` ship-${progress}` : ''}">
+          <span class="ship-progress" aria-hidden="true">${icons[progress] || '○'}</span>
+          ${statusMark(entry.reviewStatus)}
+          <a class="side-stack-number" href="${prPath(entry.number)}">#${entry.number}</a>
+          <span class="ship-title" title="${escapeAttr(entry.title)}">${escapeHtml(entry.title)}</span>
+          ${entry.number === pr.number ? '<span class="muted">this one</span>' : ''}
+          ${error ? `<span class="ship-error">${escapeHtml(error)}</span>` : ''}
+        </li>
+      `;
+    }).join('');
+    const bottom = ship.path[0];
+    const base = `<code>${escapeHtml(ship.base)}</code>`;
+    const notes = [
+      bottom.baseRefName !== ship.base
+        ? `#${bottom.number} sits on <code>${escapeHtml(bottom.baseRefName)}</code>; it moves onto ${base} first if that branch's pull request has merged.`
+        : '',
+      many ? `Each one moves onto ${base} once the one below it lands.` : '',
+      ship.children.length
+        ? `Afterwards ${ship.children.map((number) => `#${number}`).join(', ')} ${ship.children.length === 1 ? 'moves' : 'move'} onto ${base}.`
+        : '',
+    ].filter(Boolean);
+    return `
+      <div class="ship-section">
+        <div class="ship-heading">Ship ${many ? `${ship.path.length} pull requests, bottom first,` : `#${pr.number}`} into ${base}</div>
+        <ol class="ship-list">${rows}</ol>
+        ${notes.length ? `<p class="muted ship-notes">${notes.join(' ')}</p>` : ''}
+        <div class="ship-options">
+          <div class="segmented" role="radiogroup" aria-label="Merge method">
+            ${methods.map((value) => `<button type="button" role="radio" class="seg${value === method ? ' active' : ''}" data-ship-method="${value}"
+              aria-checked="${value === method}"${running ? ' disabled' : ''}>${METHOD_LABELS[value]}</button>`).join('')}
+          </div>
+          ${pr.fromFork ? '' : `<label class="ship-delete"><input type="checkbox" data-ship-delete${deleteBranch ? ' checked' : ''}${running ? ' disabled' : ''}> Delete ${many ? 'each branch' : 'the branch'} once it ships</label>`}
+        </div>
+        ${ship.reason ? `<p class="ship-blocked">${escapeHtml(ship.reason)}</p>` : ''}
+        <div class="ship-actions">
+          <button type="button" class="ship-it" data-ship-confirm${ship.ready && !running ? '' : ' disabled'}>${running
+            ? 'Shipping…'
+            : `Ship ${many ? `all ${ship.path.length}` : `#${pr.number}`} into ${escapeHtml(ship.base)}`}</button>
+        </div>
+      </div>
+    `;
+  }
+
+  function setStatusPopover(open, refocus = true) {
+    if (!open && state.ship.running) {
+      return;
+    }
+    if (open) {
+      setStackMenu(false, false);
+      if (state.versionsMenuOpen) {
+        setVersionsMenu(false, false);
+      }
+    }
+    state.statusOpen = open;
+    renderStatusNav();
+    const target = el.statusNav.querySelector(open ? '[data-ship-confirm]:not([disabled]), .status-popover' : '[data-status-toggle]');
+    if (target && (open || refocus)) {
+      target.focus();
+    }
+  }
+
+  // Lands the plan bottom first: each pull request moves onto the default branch (the server
+  // allows that only once the one below has merged) and merges; the first failure stops it.
+  async function shipStack() {
+    const ship = shipState();
+    if (!ship.ready || state.ship.running) {
+      return;
+    }
+    const { repo } = state.data;
+    const method = currentShipMethod(shipMethods(ship.path));
+    const deleteBranch = state.ship.deleteBranch === null ? repo.deleteBranchOnMerge : state.ship.deleteBranch;
+    state.ship = { ...state.ship, running: true, progress: {}, errors: {} };
+    renderStatusNav();
+    const shipped = [];
+    for (const entry of ship.path) {
+      state.ship.progress[entry.number] = 'running';
+      renderStatusNav();
+      try {
+        if (entry.baseRefName !== ship.base) {
+          await api(prApiFor(entry.number, 'retarget'), { body: {} });
+        }
+        await api(prApiFor(entry.number, 'merge'), { body: { method, deleteBranch, expectedHeadOid: entry.headRefOid } });
+        state.ship.progress[entry.number] = 'done';
+        shipped.push(entry.number);
+      } catch (err) {
+        state.ship.progress[entry.number] = 'failed';
+        state.ship.errors[entry.number] = err.message;
+        break;
+      }
+    }
+    const complete = shipped.length === ship.path.length;
+    if (complete) {
+      await Promise.all(ship.children.map((number) => api(prApiFor(number, 'retarget'), { body: {} }).catch(() => null)));
+    }
+    state.ship.running = false;
+    if (shipped.length) {
+      const list = shipped.map((number) => `#${number}`).join(', ');
+      showToast(complete ? `Shipped ${list} into ${escapeHtml(ship.base)}.` : `Shipped ${list}; the next one failed.`, complete ? 'success' : 'error');
+    }
+    if (complete) {
+      state.statusOpen = false;
+    }
+    await refreshAfterShip();
+  }
+
+  async function refreshAfterShip() {
+    try {
+      state.data = await api(prApi('pr'));
+    } catch (err) {
+      showToast(`Couldn't reload the pull request: ${escapeHtml(err.message)}`, 'error');
+    }
+    state.stack = null;
+    renderStatusNav();
+    await Promise.all([loadStack(), loadInbox()]);
+    render();
   }
 
   // ---------------------------------------------------------------- sidebar
@@ -916,7 +1194,7 @@
       number: pr.number,
       title: pr.title,
       state: pr.state,
-      reviewDecision: pr.reviewDecision,
+      reviewStatus: pr.reviewStatus,
       checks: pr.checks ? pr.checks.state : null,
       lane: 0,
     }];
@@ -983,10 +1261,10 @@
       <span class="stack-graph" aria-hidden="true"><span class="stack-dot"></span></span>
       <span class="side-stack-number">#${entry.number}</span>
       <span class="side-stack-title">${escapeHtml(entry.title)}</span>
-      <span class="side-stack-marks">${entry.state === 'OPEN' ? '' : stateBadge(entry.state)}${decisionMark(entry.reviewDecision)}${checksIcon(entry.checks)}</span>
+      <span class="side-stack-marks">${statusMark(entry.reviewStatus)}${checksIcon(entry.checks)}</span>
     `;
     if (!current) {
-      return `<a class="${classes}" href="/${escapeAttr(group.repo)}/pull/${entry.number}" style="--lane: ${entry.lane}" title="${escapeAttr(title)}">${body}</a>`;
+      return `<a class="${classes}" href="${escapeAttr(diffPath(group.repo, entry.number))}" style="--lane: ${entry.lane}" title="${escapeAttr(title)}">${body}</a>`;
     }
     return `<div class="${classes}" style="--lane: ${entry.lane}" aria-current="page" title="${escapeAttr(title)}">${body}</div>`;
   }
@@ -1004,16 +1282,6 @@
     }
     writePreference('ghArcOpenStacks', JSON.stringify(Array.from(state.openStacks)));
     renderSidebar();
-  }
-
-  function decisionMark(decision) {
-    if (decision === 'APPROVED') {
-      return '<span class="decision-mark approved" title="Accepted">✓</span>';
-    }
-    if (decision === 'CHANGES_REQUESTED') {
-      return '<span class="decision-mark changes" title="Changes requested">✕</span>';
-    }
-    return '';
   }
 
   function renderFileList() {
@@ -1283,38 +1551,46 @@
   }
 
   function renderStatus(pr) {
-    const parts = [];
-    if (pr.state === 'OPEN' || pr.state === 'DRAFT') {
-      parts.push(decisionChip(pr.reviewDecision) || '<span class="muted">No review required</span>');
+    const parts = [statusChip(pr.reviewStatus)];
+    if (pr.reviewStatus === 'ACCEPTED') {
+      const ship = shipState();
+      parts.push(ship.ready
+        ? `<span class="muted">Ready to ship${ship.path.length > 1 ? ` with the ${ship.path.length - 1} below it` : ''}</span>`
+        : `<span class="muted">${escapeHtml(ship.reason)}</span>`);
     }
     if (pr.mergeable === 'CONFLICTING') {
-      parts.push('<span class="decision-chip decision-changes">Merge conflicts</span>');
+      parts.push('<span class="status-chip status-changes">Merge conflicts</span>');
     }
     parts.push(`<span class="muted"><span class="add">+${pr.additions}</span> <span class="del">-${pr.deletions}</span> in ${pr.changedFiles} file${pr.changedFiles === 1 ? '' : 's'} · ${pr.totalCommits} commit${pr.totalCommits === 1 ? '' : 's'}</span>`);
     return parts.join(' ');
   }
 
-  function renderChecks(checks) {
-    if (!checks) {
-      return '<span class="muted">No checks</span>';
-    }
+  function checksSummary(checks) {
     const counts = { SUCCESS: 0, FAILURE: 0, PENDING: 0, NEUTRAL: 0, CANCELLED: 0 };
     checks.contexts.forEach((item) => {
       counts[item.state] = (counts[item.state] || 0) + 1;
     });
-    const summary = [
+    const text = [
       counts.FAILURE ? `<span class="del">${counts.FAILURE} failed</span>` : '',
       counts.PENDING ? `${counts.PENDING} running` : '',
       counts.SUCCESS ? `${counts.SUCCESS} passed` : '',
       counts.CANCELLED ? `${counts.CANCELLED} cancelled` : '',
       counts.NEUTRAL ? `${counts.NEUTRAL} skipped` : '',
     ].filter(Boolean).join(' · ');
+    const overall = ['FAILURE', 'PENDING', 'CANCELLED', 'SUCCESS', 'NEUTRAL'].find((key) => counts[key]) || checks.state;
+    return { counts, text, overall };
+  }
+
+  function renderChecks(checks) {
+    if (!checks) {
+      return '<span class="muted">No checks</span>';
+    }
+    const { counts, text: summary, overall } = checksSummary(checks);
     const order = { FAILURE: 0, PENDING: 1, SUCCESS: 2, CANCELLED: 3, NEUTRAL: 4 };
     const items = checks.contexts.slice().sort((a, b) => order[a.state] - order[b.state] || a.name.localeCompare(b.name));
     const more = checks.total > checks.contexts.length
       ? `<li class="muted">${checks.total - checks.contexts.length} more on GitHub</li>`
       : '';
-    const overall = ['FAILURE', 'PENDING', 'CANCELLED', 'SUCCESS', 'NEUTRAL'].find((key) => counts[key]) || checks.state;
     return `
       <details class="checks-details"${counts.FAILURE ? ' open' : ''}>
         <summary>${checksIcon(overall)} ${summary || 'No checks'}</summary>
@@ -1444,6 +1720,9 @@
   function setVersionsMenu(open, refocus = true) {
     if (open && state.stackMenuOpen) {
       setStackMenu(false, false);
+    }
+    if (open && state.statusOpen) {
+      setStatusPopover(false, false);
     }
     state.versionsMenuOpen = open;
     renderVersionsNav();
@@ -1635,38 +1914,40 @@
 
   // ---------------------------------------------------------------- review panel
 
+  // On your own pull request there is nothing to accept or block, so the panel only posts comments.
   function renderReviewPanel() {
-    const { pr, viewer } = state.data;
-    const ownPr = pr.author.login === viewer;
+    const { pr } = state.data;
+    const own = isOwnPr();
     const drafts = state.drafts.threads.concat(state.drafts.replies);
     const event = state.drafts.event;
     const events = [
-      ['COMMENT', 'Comment', false],
-      ['APPROVE', 'Accept', ownPr],
-      ['REQUEST_CHANGES', 'Request changes', ownPr],
+      ['COMMENT', 'Comment'],
+      ['APPROVE', 'Accept'],
+      ['REQUEST_CHANGES', 'Request changes'],
     ];
     const closed = pr.state === 'MERGED' || pr.state === 'CLOSED';
+    const submitLabel = own ? 'Post comments' : 'Submit review';
     return `
-      <section class="review-panel" id="review-panel" aria-label="Submit review">
+      <section class="review-panel" id="review-panel" aria-label="${own ? 'Post comments' : 'Submit review'}">
         <div class="metadata-header">
-          <span>Review</span>
+          <span>${own ? 'Comments' : 'Review'}</span>
           <span class="muted">${drafts.length ? `${drafts.length} unsubmitted inline comment${drafts.length === 1 ? '' : 's'}` : 'No inline comments yet'}</span>
         </div>
         <div class="review-body">
           ${pr.hasPendingReview ? '<p class="review-note">Your pending review on GitHub goes out with this one.</p>' : ''}
           ${drafts.length ? `<ul class="draft-summary">${drafts.map(renderDraftSummary).join('')}</ul>` : ''}
           <textarea data-review-body data-composer-key="review-body" rows="4"
-            placeholder="Leave a summary (Markdown). Inline comments stay drafts until you submit.">${escapeHtml(state.drafts.body)}</textarea>
+            placeholder="${own ? 'Reply to your reviewers (Markdown). Inline replies stay drafts until you post them.' : 'Leave a summary (Markdown). Inline comments stay drafts until you submit.'}">${escapeHtml(state.drafts.body)}</textarea>
           <div class="review-actions">
-            <div class="segmented review-events" role="radiogroup" aria-label="Review action">
-              ${events.map(([value, label, disabled]) => `
+            ${own ? '' : `<div class="segmented review-events" role="radiogroup" aria-label="Review action">
+              ${events.map(([value, label]) => `
                 <button type="button" role="radio" class="seg${event === value ? ' active' : ''}" data-review-event="${value}"
-                  aria-checked="${event === value}"${disabled ? ' disabled title="Not available on your own pull request"' : ''}>${label}</button>
+                  aria-checked="${event === value}">${label}</button>
               `).join('')}
-            </div>
+            </div>`}
             <span class="review-error" role="alert">${escapeHtml(state.submitError)}</span>
             <button type="button" class="primary-action" data-review-submit${state.submitting || closed ? ' disabled' : ''}>
-              ${state.submitting ? 'Submitting…' : 'Submit review'}
+              ${state.submitting ? 'Posting…' : submitLabel}
             </button>
           </div>
           <div class="muted review-hint">⌘/Ctrl+Enter saves or submits · j/k next and previous file · [ and ] down and up the stack · s picks from the stack · v compares versions</div>
@@ -1714,7 +1995,7 @@
     refreshReviewPanel();
     try {
       const result = await api(prApi('submit'), {
-        body: { event: state.drafts.event, body: state.drafts.body },
+        body: { event: isOwnPr() ? 'COMMENT' : state.drafts.event, body: state.drafts.body },
       });
       state.submitting = false;
       if (!result.submitted) {
