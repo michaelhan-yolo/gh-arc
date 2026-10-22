@@ -128,23 +128,31 @@
       <style>
         :host { all: initial; }
         .notice {
-          position: fixed; right: 16px; bottom: 16px; z-index: 2147483647; max-width: 360px;
-          display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px;
-          font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-          color: #1f2328; background: #fff; border: 1px solid #d0d7de; border-radius: 8px;
-          box-shadow: 0 8px 24px rgba(140, 149, 159, 0.3);
+          position: fixed; right: 16px; bottom: 16px; z-index: 2147483647; max-width: 380px;
+          display: flex; gap: 10px; align-items: flex-start; padding: 12px 12px 12px 14px;
+          font: 13px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          color: #1c1e21; background: #fff; border: 1px solid #dcdfe4; border-radius: 10px;
+          box-shadow: 0 8px 24px rgba(20, 31, 46, 0.16);
         }
-        code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
-        .actions { display: flex; gap: 6px; margin-top: 8px; }
-        button { font: inherit; padding: 2px 10px; border: 1px solid #d0d7de; border-radius: 6px; background: #f6f8fa; color: inherit; cursor: pointer; }
-        .close { padding: 0 6px; border: 0; background: none; font-size: 16px; line-height: 1; color: #59636e; }
+        .info { flex: 0 0 auto; margin-top: 1px; color: #1b6fe4; }
+        code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; padding: 1px 4px; border-radius: 4px; background: #f0f2f5; }
+        .actions { display: flex; gap: 6px; margin-top: 10px; }
+        button { font: inherit; min-height: 28px; padding: 3px 12px; border: 1px solid #1b6fe4; border-radius: 8px; background: #1b6fe4; color: #fff; font-weight: 600; cursor: pointer; }
+        button:hover { background: #1458bd; border-color: #1458bd; }
+        .close { min-height: 0; padding: 0 6px; border: 0; background: none; font-size: 18px; font-weight: 400; line-height: 1; color: #65686d; }
+        .close:hover { background: none; color: #1c1e21; }
         @media (prefers-color-scheme: dark) {
-          .notice { color: #e6edf3; background: #161b22; border-color: #30363d; box-shadow: none; }
-          button { background: #21262d; border-color: #30363d; }
-          .close { color: #8d96a0; }
+          .notice { color: #e4e6eb; background: #1f2023; border-color: #393b40; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); }
+          .info { color: #4d96f7; }
+          code { background: #2a2c30; }
+          button { background: #4d96f7; border-color: #4d96f7; }
+          button:hover { background: #3a86f0; border-color: #3a86f0; }
+          .close { color: #a3a7ad; }
+          .close:hover { color: #e4e6eb; }
         }
       </style>
       <div class="notice" role="status">
+        <svg class="info" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.6v.1"/></svg>
         <div>
           <div><b>gh-arc isn't running</b> at <code></code>, so this is GitHub's page.</div>
           <div>Start it with <code>gh arc serve</code>.</div>

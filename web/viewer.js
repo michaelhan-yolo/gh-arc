@@ -3,7 +3,7 @@
 // The diff engine (patch parsing, split/unified tables, context expansion, range selection)
 // comes from local-arc (MIT, Emerson Ding). The GitHub layer around it is gh-arc's.
 (function () {
-  const { api, avatar, checksIcon, diffPath, escapeHtml, homeRepo, onGitHub, prepareLinks, stateBadge, statusChip, statusInfo, statusMark, time } = window.GhArc;
+  const { api, avatar, checksIcon, diffPath, escapeHtml, homeRepo, icon, onGitHub, prepareLinks, stateBadge, statusChip, statusInfo, statusMark, time } = window.GhArc;
   const { applyHeaderLine, parseDiffGitLine } = window.GhArcPatchPaths;
   const escapeAttr = escapeHtml;
   const LARGE_FILE_LINES = 1500;
@@ -53,6 +53,7 @@
       filter: '',
       showAllActivity: false,
       summaryExpanded: false,
+      closedSections: new Set(),
       outdatedOpen: false,
       botsOpen: false,
       submitting: false,
@@ -75,6 +76,12 @@
     fileList: document.getElementById('file-list'),
     heading: document.getElementById('pr-heading'),
     subheading: document.getElementById('pr-subheading'),
+    avatar: document.getElementById('pr-avatar'),
+    checksPill: document.getElementById('checks-pill'),
+    tabs: document.getElementById('page-tabs'),
+    githubOpen: document.getElementById('github-open'),
+    topbar: document.querySelector('.topbar'),
+    sidebar: document.querySelector('.sidebar'),
     filter: document.getElementById('file-filter'),
     split: document.getElementById('mode-split'),
     unified: document.getElementById('mode-unified'),
@@ -141,6 +148,8 @@
   async function boot() {
     bindControls();
     bindNavigation();
+    bindTopbarHeight();
+    bindTabs();
     setMode(state.mode, true);
     el.content.innerHTML = '<div class="empty">Loading pull request…</div>';
     loadInbox();
@@ -619,6 +628,12 @@
     } else if (match('[data-activity-more]')) {
       state.showAllActivity = true;
       renderContent();
+    } else if ((node = match('[data-section-toggle]'))) {
+      const id = node.getAttribute('data-section-toggle');
+      if (!state.closedSections.delete(id)) {
+        state.closedSections.add(id);
+      }
+      renderContent();
     } else if (match('[data-summary-more]')) {
       state.summaryExpanded = !state.summaryExpanded;
       renderContent();
@@ -732,7 +747,7 @@
   // Files scroll to just under the sticky top bar (scroll-margin-top in the CSS).
   function stepFile(direction) {
     const articles = Array.from(el.content.querySelectorAll('article.file'));
-    const anchor = 72;
+    const anchor = topbarOffset() + 8;
     const tops = articles.map((article) => article.getBoundingClientRect().top);
     let target = null;
     if (direction > 0) {
@@ -770,8 +785,8 @@
       dragging = false;
       document.body.classList.remove('resizing-sidebar');
     }
-    function updateFromClientX(clientX) {
-      const width = clamp(clientX, 180, Math.min(640, window.innerWidth - 360));
+    function updateWidth(value) {
+      const width = clamp(value, 180, Math.min(640, window.innerWidth - 360));
       setSidebarWidth(width);
       writePreference('ghArcSidebarWidth', String(width));
     }
@@ -779,12 +794,12 @@
       dragging = true;
       document.body.classList.add('resizing-sidebar');
       el.resizer.setPointerCapture(event.pointerId);
-      updateFromClientX(event.clientX);
+      updateWidth(event.clientX - el.sidebar.getBoundingClientRect().left);
       event.preventDefault();
     });
     el.resizer.addEventListener('pointermove', (event) => {
       if (dragging) {
-        updateFromClientX(event.clientX);
+        updateWidth(event.clientX - el.sidebar.getBoundingClientRect().left);
       }
     });
     el.resizer.addEventListener('pointerup', stopDrag);
@@ -797,7 +812,7 @@
       const current = Number(getComputedStyle(document.documentElement)
         .getPropertyValue('--sidebar-width')
         .replace('px', '')) || 280;
-      updateFromClientX(current + (event.key === 'ArrowRight' ? 20 : -20));
+      updateWidth(current + (event.key === 'ArrowRight' ? 20 : -20));
     });
   }
 
@@ -862,6 +877,7 @@
 
   function render() {
     renderHeader();
+    renderTabs();
     renderStackNav();
     renderVersionsNav();
     renderStatusNav();
@@ -878,6 +894,8 @@
         ? 'Check the number and that your GitHub account can see this repository.'
         : '';
     el.heading.textContent = `${ROUTE.owner}/${ROUTE.repo}#${ROUTE.number}`;
+    el.avatar.innerHTML = '';
+    el.tabs.innerHTML = '';
     el.content.innerHTML = `
       <div class="fatal">
         <strong>Couldn't load this pull request.</strong>
@@ -886,11 +904,104 @@
       </div>`;
   }
 
+  // The header: author, number and title, then a row of status, checks, stack, versions and
+  // when it last changed; the tabs below jump to the sections of the page.
   function renderHeader() {
     const { pr, repo } = state.data;
-    el.heading.innerHTML = `<span class="heading-number">#${pr.number}</span> ${escapeHtml(pr.title)}`;
+    el.avatar.innerHTML = avatar(pr.author, 32);
+    el.heading.innerHTML = `<span class="heading-number">#${pr.number}</span> <span class="pr-title">${escapeHtml(pr.title)}</span>`;
     el.heading.title = pr.title;
-    el.subheading.innerHTML = `${escapeHtml(repo.nameWithOwner)} · <code>${escapeHtml(pr.headRefName)}</code> → <code>${escapeHtml(pr.baseRefName)}</code> · <a class="github-link" href="${escapeAttr(onGitHub(pr.url))}">GitHub</a>`;
+    el.githubOpen.href = onGitHub(pr.url);
+    el.githubOpen.hidden = false;
+    el.checksPill.innerHTML = renderChecksPill(pr.checks);
+    el.subheading.innerHTML = [
+      `Updated ${time(pr.updatedAt || pr.createdAt)} by ${userLink(pr.author.login)}`,
+      escapeHtml(repo.nameWithOwner),
+      `<code>${escapeHtml(pr.headRefName)}</code> → <code>${escapeHtml(pr.baseRefName)}</code>`,
+      `<a class="github-link" href="${escapeAttr(onGitHub(pr.url))}">GitHub</a>`,
+    ].map((part) => `<span>${part}</span>`).join('');
+  }
+
+  // The checks as one pill: green once they pass, red when one fails, amber while they run.
+  function renderChecksPill(checks) {
+    if (!checks || !checks.contexts.length) {
+      return '';
+    }
+    const { counts, overall } = checksSummary(checks);
+    const [label, tone, glyph] = counts.FAILURE
+      ? [`${counts.FAILURE} check${counts.FAILURE === 1 ? '' : 's'} failed`, 'failure', 'x']
+      : counts.PENDING
+        ? ['Checks running', 'pending', 'info']
+        : overall === 'SUCCESS'
+          ? ['Checks passed', 'success', 'check-circle']
+          : ['Checks done', 'neutral', 'check-circle'];
+    return `<a class="checks-pill checks-pill-${tone}" href="#details" title="See every check">${icon(glyph, 14)}${label}</a>`;
+  }
+
+  function renderTabs() {
+    const add = sum(state.files.map((file) => file.additions));
+    const del = sum(state.files.map((file) => file.deletions));
+    const discussion = discussionCount();
+    const tabs = [
+      ['description', 'info', 'Summary', ''],
+      ['details', 'list', 'Details', ''],
+      discussion === null ? null : ['discussion', 'chat', 'Discussion', `<span class="tab-count">${discussion}</span>`],
+      ['code', 'code', 'Code', `<span class="add">+${add}</span> <span class="del">-${del}</span>`],
+    ].filter(Boolean);
+    el.tabs.innerHTML = tabs.map(([id, glyph, label, extra]) =>
+      `<a class="page-tab" href="#${id}" data-tab="${id}">${icon(glyph, 16)}<span>${label}</span>${extra ? ` <span class="tab-extra">${extra}</span>` : ''}</a>`).join('');
+    updateActiveTab();
+  }
+
+  // The tab for the section under the header is the active one.
+  function bindTabs() {
+    let queued = false;
+    window.addEventListener('scroll', () => {
+      if (!queued) {
+        queued = true;
+        window.requestAnimationFrame(() => {
+          queued = false;
+          updateActiveTab();
+        });
+      }
+    }, { passive: true });
+  }
+
+  function updateActiveTab() {
+    const tabs = Array.from(el.tabs.querySelectorAll('[data-tab]'));
+    if (!tabs.length) {
+      return;
+    }
+    const line = topbarOffset() + 24;
+    let active = tabs[0];
+    tabs.forEach((tab) => {
+      const section = document.getElementById(tab.getAttribute('data-tab'));
+      if (section && section.getBoundingClientRect().top <= line) {
+        active = tab;
+      }
+    });
+    tabs.forEach((tab) => {
+      const on = tab === active;
+      tab.classList.toggle('active', on);
+      if (on) {
+        tab.setAttribute('aria-current', 'location');
+      } else {
+        tab.removeAttribute('aria-current');
+      }
+    });
+  }
+
+  // The header's height, for sticky file headers and anchors under it; it grows when its rows wrap.
+  function bindTopbarHeight() {
+    const update = () => document.documentElement.style.setProperty('--topbar-live', `${Math.ceil(el.topbar.getBoundingClientRect().height)}px`);
+    update();
+    if (window.ResizeObserver) {
+      new ResizeObserver(update).observe(el.topbar);
+    }
+  }
+
+  function topbarOffset() {
+    return parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--topbar-height')) || 0;
   }
 
   function renderStackNav() {
@@ -909,7 +1020,7 @@
           ? `<a class="stack-step" href="${prPath(parent)}" title="Down the stack: #${parent} ( [ )">‹ #${parent}</a>`
           : '<span class="stack-step disabled" title="Bottom of the stack">‹</span>'}
         <button type="button" class="stack-position" data-stack-menu-toggle aria-haspopup="menu" aria-expanded="${state.stackMenuOpen}"
-          title="Pick a pull request in this stack (s)">Stack ${position}/${stack.entries.length} <span aria-hidden="true">▾</span></button>
+          title="Pick a pull request in this stack (s)">${icon('stack', 15)}<span class="sr-only">Stack </span>${position}/${stack.entries.length}${icon('chevron-down', 12)}</button>
         ${child
           ? `<a class="stack-step" href="${prPath(child)}" title="Up the stack: #${child} ( ] )">#${child} ›</a>`
           : '<span class="stack-step disabled" title="Top of the stack">›</span>'}
@@ -992,7 +1103,9 @@
 
   function updateCommentsToggle() {
     const count = state.comments.length;
-    el.commentsToggle.textContent = `${state.commentsVisible ? 'Hide' : 'Show'} comments${count ? ` (${count})` : ''}`;
+    el.commentsToggle.innerHTML = `${icon('chat', 14)}Comments${count ? ` ${count}` : ''} · ${state.commentsVisible ? 'On' : 'Off'}`;
+    el.commentsToggle.setAttribute('aria-pressed', String(state.commentsVisible));
+    el.commentsToggle.title = `${state.commentsVisible ? 'Hide' : 'Show'} inline comments`;
   }
 
   function isOwnPr() {
@@ -1459,7 +1572,7 @@
     const viewing = current && !current.mine ? heading('Viewing') + renderStackEntry(current) : '';
     el.sidebarStack.innerHTML = viewing + heading('Your stacks', mine.length) + mine.map(renderStackEntry).join('') + note;
     revealCurrentStackRow();
-    el.filesHeading.innerHTML = `<span>Files in #${ROUTE.number}</span><span class="section-count">${state.files.length}</span>`;
+    el.filesHeading.innerHTML = renderFilesHeading();
     renderSummary();
     renderFileList();
   }
@@ -1507,6 +1620,49 @@
     }))).filter((entry) => entry.items.length > 1);
   }
 
+  // "Displaying 6 files (4 modified, 2 added, 0 deleted)", with renames counted when there are any.
+  function renderFilesHeading() {
+    const counts = { M: 0, A: 0, D: 0, R: 0 };
+    state.files.forEach((file) => {
+      counts[fileKind(file)] += 1;
+    });
+    const total = state.files.length;
+    const parts = [`${counts.M} modified`, `${counts.A} added`, `${counts.D} deleted`];
+    if (counts.R) {
+      parts.push(`${counts.R} renamed`);
+    }
+    return `<span>Displaying ${total} file${total === 1 ? '' : 's'}</span> <span class="files-breakdown">(${parts.join(', ')})</span>`;
+  }
+
+  // Added, deleted, renamed or modified, as the one letter the file tree and headers show.
+  function fileKind(file) {
+    if (!file.oldPath) {
+      return 'A';
+    }
+    if (!file.newPath) {
+      return 'D';
+    }
+    return file.oldPath !== file.newPath ? 'R' : 'M';
+  }
+
+  function fileKindBadge(file) {
+    const kind = fileKind(file);
+    const names = { A: 'Added', D: 'Deleted', R: 'Renamed', M: 'Modified' };
+    return `<span class="file-kind file-kind-${kind.toLowerCase()}" title="${names[kind]}" aria-label="${names[kind]}">${kind}</span>`;
+  }
+
+  // The stack as a whole, as a pill: changes requested when any pull request has them, accepted
+  // when every one is, otherwise where its bottom pull request stands.
+  function stackChip(items) {
+    if (items.some((item) => item.reviewStatus === 'CHANGES_REQUESTED')) {
+      return statusChip('CHANGES_REQUESTED');
+    }
+    if (items.every((item) => item.reviewStatus === 'ACCEPTED' || item.reviewStatus === 'MERGED')) {
+      return statusChip('ACCEPTED');
+    }
+    return statusChip(items[items.length - 1].reviewStatus);
+  }
+
   // One glyph for the stack as a whole: accepted when every pull request is, blocked when any
   // has changes requested.
   function stackStatus(items) {
@@ -1523,12 +1679,19 @@
     const repoName = stack.repo === `${ROUTE.owner}/${ROUTE.repo}` ? '' : `<span class="side-group-repo">${escapeHtml(stack.repo.split('/')[1])}</span>`;
     const position = stack.items.length - stack.items.findIndex((item) => item.number === ROUTE.number);
     const count = stack.current ? `${position}/${stack.items.length}` : String(stack.items.length);
+    const updated = stack.items.map((item) => item.updatedAt).filter(Boolean).sort().pop();
     const body = `
-      <span class="side-stack-dot" aria-hidden="true"></span>
       <span class="side-group-label">${escapeHtml(bottom.title)}</span>
-      ${repoName}
-      ${stackStatus(stack.items)}
-      <span class="side-group-count">${count}</span>
+      <span class="side-stack-meta">
+        ${stackChip(stack.items)}
+        ${bottom.author ? avatar(bottom.author, 16) : ''}
+        <span class="side-stack-size" title="Pull requests in this stack">${icon('stack', 13)}<span class="side-group-count">${count}</span></span>
+        ${repoName}
+      </span>
+      <span class="side-stack-foot">
+        ${updated ? `<span class="side-stack-time">${time(updated)}</span>` : ''}
+        ${stackStatus(stack.items)}
+      </span>
     `;
     if (stack.current) {
       return `<div class="side-stack-entry current" aria-current="true" title="${escapeAttr(`You're on #${ROUTE.number}, ${position} of ${stack.items.length} from the bottom`)}">${body}</div>`;
@@ -1544,7 +1707,7 @@
     }
     const filtered = getFilteredFiles();
     node.innerHTML = filtered.length
-      ? renderTreeChildren(buildFileTree(filtered), 0)
+      ? renderTreeChildren(buildFileTree(filtered))
       : '<div class="muted">No matching files.</div>';
   }
 
@@ -1587,11 +1750,11 @@
     return folder;
   }
 
-  function renderTreeChildren(folder, depth) {
+  function renderTreeChildren(folder) {
     const folders = Array.from(folder.folders.values()).sort((a, b) => a.name.localeCompare(b.name));
     const files = folder.files.slice().sort((a, b) => a.name.localeCompare(b.name));
-    return folders.map((child) => renderFolder(child, depth)).join('') +
-      files.map((item) => renderFileNode(item, depth)).join('');
+    return folders.map(renderFolder).join('') +
+      files.map(renderFileNode).join('');
   }
 
   function flattenFileTree(folder) {
@@ -1600,28 +1763,34 @@
     return folders.flatMap(flattenFileTree).concat(files.map((item) => item.file));
   }
 
-  function renderFolder(folder, depth) {
+  // Folders nest with a guide line down their children.
+  function renderFolder(folder) {
     const collapsed = state.collapsedFolders.has(folder.key);
     return `
       <div class="tree-folder">
         <button type="button" class="tree-folder-button${collapsed ? ' collapsed' : ''}" data-folder="${escapeAttr(folder.key)}"
-          style="--tree-depth: ${depth}" aria-expanded="${collapsed ? 'false' : 'true'}" title="${escapeAttr(folder.key)}">
+          aria-expanded="${collapsed ? 'false' : 'true'}" title="${escapeAttr(folder.key)}">
+          <span class="tree-chevron">${icon(collapsed ? 'chevron-right' : 'chevron-down', 14)}</span>
+          ${icon('folder', 15)}
           <span class="tree-name">${escapeHtml(folder.name)}</span>
           ${renderTreeCommentCount(folder.commentCount)}
         </button>
-        ${collapsed ? '' : renderTreeChildren(folder, depth + 1)}
+        ${collapsed ? '' : `<div class="tree-children">${renderTreeChildren(folder)}</div>`}
       </div>
     `;
   }
 
-  function renderFileNode(item, depth) {
+  // A long name loses its start, not its end, so the file's own name stays readable.
+  function renderFileNode(item) {
     const file = item.file;
     const viewed = isViewed(file);
     return `
-      <a class="file-link${viewed ? ' viewed' : ''}" href="#file-${file.id}" style="--tree-depth: ${depth}" title="${escapeAttr(displayPath(file))}">
-        <span class="path">${viewed ? '<span class="viewed-check" aria-label="Viewed">✓</span>' : ''}${escapeHtml(item.name)}</span>
-        ${renderTreeCommentCount(item.commentCount)}
+      <a class="file-link${viewed ? ' viewed' : ''}" href="#file-${file.id}" title="${escapeAttr(displayPath(file))}">
+        ${fileKindBadge(file)}
         <span class="stat"><span class="add">+${file.additions}</span> <span class="del">-${file.deletions}</span></span>
+        <span class="path"><bdi>${escapeHtml(item.name)}</bdi></span>
+        ${viewed ? `<span class="viewed-check" aria-label="Viewed" title="Viewed">${icon('check', 14)}</span>` : ''}
+        ${renderTreeCommentCount(item.commentCount)}
       </a>
     `;
   }
@@ -1650,6 +1819,7 @@
     const files = getFilteredFiles();
     const ordered = files.length ? flattenFileTree(buildFileTree(files)) : [];
     el.content.innerHTML = renderDetails() +
+      '<div id="code" class="code-anchor"></div>' +
       (ordered.length ? ordered.map(renderFile).join('') : renderNoChanges()) +
       renderBotComments() +
       renderReviewPanel();
@@ -1748,30 +1918,41 @@
 
   // ---------------------------------------------------------------- details
 
+  // Collapsible sections, as in a document: the summary, the details, then the discussion.
   function renderDetails() {
-    const { pr, repo } = state.data;
+    const { pr } = state.data;
+    const details = `
+      <dl class="metadata-properties">
+        ${property('Author', `${avatar(pr.author)} ${userLink(pr.author.login)} <span class="muted">opened ${time(pr.createdAt)}</span>`)}
+        ${property('Reviewers', renderReviewers(pr.reviewers))}
+        ${property('Status', `${pr.reviewStatus === pr.state ? '' : `${stateBadge(pr.state)} `}${renderStatus(pr)}`)}
+        ${property('Checks', renderChecks(pr.checks))}
+        ${pr.labels.length ? property('Labels', pr.labels.map(renderLabel).join(' ')) : ''}
+        ${property('Changes', renderChangesPicker(pr))}
+      </dl>
+    `;
     return `
-      <section class="diff-metadata pr-details" aria-label="Pull request details">
-        <div class="metadata-header">
-          <div class="pr-header-left">${stateBadge(pr.state)}<span>${escapeHtml(repo.nameWithOwner)} #${pr.number}</span></div>
-          <a class="external-link" href="${escapeAttr(onGitHub(pr.url))}" target="_blank" rel="noreferrer noopener">Open on GitHub ↗</a>
-        </div>
-        <div class="metadata-body">
-          <h2 class="pr-title">${escapeHtml(pr.title)}</h2>
-          ${renderRangeBanner()}
-          <dl class="metadata-properties">
-            ${property('Author', `${avatar(pr.author)} ${userLink(pr.author.login)} <span class="muted">opened ${time(pr.createdAt)}</span>`)}
-            ${property('Branch', `<code>${escapeHtml(pr.headRefName)}</code> → <code>${escapeHtml(pr.baseRefName)}</code>`)}
-            ${property('Reviewers', renderReviewers(pr.reviewers))}
-            ${property('Status', renderStatus(pr))}
-            ${property('Checks', renderChecks(pr.checks))}
-            ${pr.labels.length ? property('Labels', pr.labels.map(renderLabel).join(' ')) : ''}
-            ${property('Changes', renderChangesPicker(pr))}
-          </dl>
-          ${renderSummarySection(pr)}
-          ${renderDiscussion(pr)}
-          ${renderOutdated()}
-        </div>
+      <div class="pr-details" aria-label="Pull request details">
+        ${renderRangeBanner()}
+        ${renderSummarySection(pr)}
+        ${docSection('details', 'Details', '', details)}
+        ${renderDiscussion(pr)}
+        ${renderOutdated()}
+      </div>
+    `;
+  }
+
+  function docSection(id, title, extra, body, aside = '') {
+    const closed = state.closedSections.has(id);
+    return `
+      <section class="doc-section${closed ? ' closed' : ''}" id="${id}">
+        <header class="doc-section-head">
+          <h2><button type="button" class="doc-section-toggle" data-section-toggle="${id}" aria-expanded="${!closed}">
+            ${icon(closed ? 'chevron-right' : 'chevron-down', 16)}<span class="doc-section-title">${title}</span>${extra}
+          </button></h2>
+          ${aside}
+        </header>
+        ${closed ? '' : `<div class="doc-section-body">${body}</div>`}
       </section>
     `;
   }
@@ -1814,7 +1995,7 @@
         : `<span class="muted">${escapeHtml(ship.reason)}</span>`);
     }
     if (pr.mergeable === 'CONFLICTING') {
-      parts.push('<span class="status-chip status-changes">Merge conflicts</span>');
+      parts.push('<span class="status-chip status-changes"><span class="status-dot" aria-hidden="true"></span>Merge conflicts</span>');
     }
     parts.push(`<span class="muted"><span class="add">+${pr.additions}</span> <span class="del">-${pr.deletions}</span> in ${pr.changedFiles} file${pr.changedFiles === 1 ? '' : 's'} · ${pr.totalCommits} commit${pr.totalCommits === 1 ? '' : 's'}</span>`);
     return parts.join(' ');
@@ -1915,9 +2096,10 @@
       ? ' You can comment on the right side.'
       : ' Comments are read-only in this view.';
     return `
-      <div class="range-banner">
-        Showing ${label}.${note}${commenting}
-        <a href="${prPath(ROUTE.number)}">Back to all changes</a>
+      <div class="range-banner info-banner">
+        ${icon('info', 16)}
+        <div>Showing ${label}.${note}${commenting}
+        <a href="${prPath(ROUTE.number)}">Back to all changes</a></div>
       </div>
     `;
   }
@@ -2070,25 +2252,33 @@
   function renderSummarySection(pr) {
     const long = pr.bodyHTML && pr.bodyHTML.length > LONG_SUMMARY_CHARS;
     const clamped = long && !state.summaryExpanded;
-    return `
-      <div class="metadata-section">
-        <div class="metadata-section-heading"><div class="metadata-section-title"><span>Summary</span></div></div>
+    return docSection('description', 'Summary', '', `
         <div class="diff-description markdown-body${clamped ? ' clamped' : ''}">
           ${pr.bodyHTML || '<p class="muted">No description.</p>'}
         </div>
         ${long ? `<button type="button" class="link-button" data-summary-more>${clamped ? 'Show the full description' : 'Show less'}</button>` : ''}
-      </div>
-    `;
+    `);
   }
 
   // What people said, oldest first, before the code: comments, reviews, and every inline review
   // comment with the line it is on. Bots (Linear, github-actions, Graphite) go after the code.
-  function renderDiscussion(pr) {
+  function discussionItems(pr) {
     const threads = state.threads
       .filter((thread) => thread.comments.length && !thread.comments[0].author.bot)
       .map((thread) => ({ type: 'thread', thread, createdAt: thread.comments[0].createdAt }));
-    const items = pr.timeline.filter((item) => !item.author.bot).concat(threads)
+    return pr.timeline.filter((item) => !item.author.bot).concat(threads)
       .sort((left, right) => String(left.createdAt).localeCompare(String(right.createdAt)));
+  }
+
+  // How many items the Discussion tab counts, or null when the page has no discussion section.
+  function discussionCount() {
+    const pr = state.data.pr;
+    const items = discussionItems(pr);
+    return items.length || pr.timeline.some((item) => item.author.bot) ? items.length : null;
+  }
+
+  function renderDiscussion(pr) {
+    const items = discussionItems(pr);
     const bots = pr.timeline.filter((item) => item.author.bot).length;
     if (!items.length && !bots) {
       return '';
@@ -2097,17 +2287,11 @@
     const botNote = bots
       ? `<button type="button" class="link-button bot-note" data-show-bots>${bots} bot comment${bots === 1 ? '' : 's'} after the code</button>`
       : '';
-    return `
-      <div class="metadata-section metadata-activity" id="discussion">
-        <div class="metadata-section-heading">
-          <div class="metadata-section-title"><span>Discussion</span><span class="section-count">${items.length}</span></div>
-          ${botNote}
-        </div>
+    return docSection('discussion', 'Discussion', `<span class="section-count">${items.length}</span>`, `
         ${items.length ? '' : '<p class="muted discussion-empty">No one has commented yet.</p>'}
         ${hidden ? `<button type="button" class="link-button activity-more" data-activity-more>Show ${hidden} earlier</button>` : ''}
         <ol class="activity-list">${items.slice(hidden).map((item) => (item.type === 'thread' ? renderDiscussionThread(item.thread) : renderActivityItem(item))).join('')}</ol>
-      </div>
-    `;
+    `, botNote);
   }
 
   function renderDiscussionThread(thread) {
@@ -2195,7 +2379,7 @@
     }
     const unresolved = loose.filter((comment) => !comment.resolved).length;
     return `
-      <div class="metadata-section">
+      <div class="doc-section outdated-section">
         <details class="outdated-details" data-outdated-details${state.outdatedOpen ? ' open' : ''}>
           <summary class="metadata-section-title">
             <span>Outdated comments</span>
@@ -2354,6 +2538,7 @@
         <header class="file-header">
           <button type="button" class="file-collapse" data-file-toggle="${file.id}" aria-expanded="${!collapsed}"
             aria-label="${collapsed ? 'Expand' : 'Collapse'} file" title="${collapsed ? 'Expand' : 'Collapse'} file"></button>
+          ${fileKindBadge(file)}
           <div class="file-title" title="${escapeAttr(displayPath(file))}">${escapeHtml(displayPath(file))}</div>
           <div class="file-actions">
             ${fileStatusLabel(file)}
@@ -2375,15 +2560,6 @@
     if (note === 'rebased') {
       return '<span class="file-status rebased" title="Base changes merged in between the versions are left out of this file">Base changes left out</span>';
     }
-    if (!file.oldPath) {
-      return '<span class="file-status added">Added</span>';
-    }
-    if (!file.newPath) {
-      return '<span class="file-status deleted">Deleted</span>';
-    }
-    if (file.oldPath !== file.newPath) {
-      return '<span class="file-status renamed">Renamed</span>';
-    }
     return '';
   }
 
@@ -2393,7 +2569,7 @@
     }
     const ref = state.refs.newRef || state.data.pr.headRefOid;
     const href = `https://github.com/${ROUTE.owner}/${ROUTE.repo}/blob/${ref}/${file.newPath.split('/').map(encodeURIComponent).join('/')}`;
-    return `<a class="file-github-link" href="${escapeAttr(href)}" target="_blank" rel="noreferrer noopener" title="Open this version of the file on GitHub">↗</a>`;
+    return `<a class="file-github-link" href="${escapeAttr(href)}" target="_blank" rel="noreferrer noopener" title="Open this version of the file on GitHub" aria-label="Open this version of the file on GitHub">${icon('external', 15)}</a>`;
   }
 
   function renderFileHeaders(file) {

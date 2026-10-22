@@ -211,8 +211,9 @@ test('the sidebar lists stacks only, one row each, with the one on screen marked
   await expect(current.locator('.side-group-count')).toHaveText('2/3');
   await expect(sidebar.locator('.side-stack-entry')).toHaveCount(2);
   await expect(sidebar).not.toContainText('Fix a typo');
-  await expect(page.locator('#files-heading')).toHaveText(/Files in #2\s*2/);
+  await expect(page.locator('#files-heading')).toHaveText('Displaying 2 files (1 modified, 0 added, 0 deleted, 1 renamed)');
   await expect(page.locator('.sidebar-files .file-link')).toHaveCount(2);
+  await expect(page.locator('.sidebar-files .file-link .file-kind')).toHaveText(['R', 'M']);
 
   const docs = sidebar.locator('a.side-stack-entry', { hasText: 'Widget docs' });
   await expect(docs.locator('.side-group-count')).toHaveText('2');
@@ -288,6 +289,25 @@ test('people come before the code, inline comments included, and bots after it',
 
   await page.locator('#discussion [data-jump-comment="T_live"]').first().click();
   await expect(page.locator('article.file [data-comment-id="T_live"]')).toBeInViewport();
+});
+
+test('the header carries the status, checks and stack, and its tabs jump to each section', async ({ page }) => {
+  await page.goto(`${base}/diffs/2`);
+  await expect(page.locator('#pr-heading')).toHaveText('#2 Render widgets');
+  await expect(page.locator('#checks-pill')).toHaveText('1 check failed');
+  await expect(page.locator('#pr-subheading')).toContainText('Updated');
+  const tabs = page.locator('#page-tabs .page-tab');
+  await expect(tabs).toHaveText(['Summary', 'Details', /Discussion\s*4/, /Code\s*\+3 -2/]);
+  await expect(tabs.first()).toHaveClass(/active/);
+  await tabs.filter({ hasText: 'Code' }).click();
+  await expect(page.locator('article.file').first()).toBeInViewport();
+  await expect(tabs.filter({ hasText: 'Code' })).toHaveClass(/active/);
+
+  await page.locator('[data-section-toggle="description"]').click();
+  await expect(page.locator('.diff-description')).toHaveCount(0);
+  await expect(page.locator('[data-section-toggle="description"]')).toHaveAttribute('aria-expanded', 'false');
+  await page.locator('[data-section-toggle="description"]').click();
+  await expect(page.locator('.diff-description')).toBeVisible();
 });
 
 test('the layout buttons switch between side by side and unified', async ({ page }) => {
@@ -518,6 +538,26 @@ test('the inbox draws each stack top first over its trunk', async ({ page }) => 
   await page.locator('#open-input').fill('https://github.com/octo/widgets/pull/2/files');
   await page.locator('#open-input').press('Enter');
   await expect(page).toHaveURL(`${base}/diffs/2`);
+});
+
+test('the inbox sidebar and the repository chips narrow what it lists', async ({ page }) => {
+  await page.goto(`${base}/`);
+  const nav = page.locator('#home-nav .home-nav-item');
+  await expect(nav).toHaveText(['All pull requests', /Needs your review\s*3/, /Your pull requests\s*3/, /Reviewed by you\s*1/]);
+  await nav.filter({ hasText: 'Your pull requests' }).click();
+  await expect(page).toHaveURL(`${base}/#mine`);
+  await expect(page.locator('.inbox-section')).toHaveCount(1);
+  await expect(page.locator('#filter-chips')).toHaveText('Section is Your pull requests');
+  await page.locator('.quick-filter', { hasText: 'octo/widgets' }).click();
+  await expect(page.locator('#filter-chips .filter-chip')).toHaveCount(2);
+  await page.locator('.quick-filter-clear').click();
+  await expect(page.locator('.inbox-section')).toHaveCount(3);
+  await expect(page.locator('#filter-chips .filter-chip')).toHaveCount(0);
+
+  await page.goto(`${base}/diffs/2`);
+  await page.locator('.rail-link[title="Reviewed by you"]').click();
+  await expect(page).toHaveURL(`${base}/#reviewed`);
+  await expect(page.locator('.inbox-section')).toHaveText(/Reviewed by you/);
 });
 
 test('uploaded images in the description load from gh-arc after their signed links expire', async ({ page }) => {
