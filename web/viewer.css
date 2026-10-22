@@ -1402,6 +1402,57 @@ button.ship-it.blocked {
   margin-top: 12px;
 }
 
+.status-actions {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.status-actions-heading {
+  font-weight: 650;
+}
+
+.review-picks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.review-pick {
+  padding-left: 6px;
+  cursor: pointer;
+}
+
+.review-pick input {
+  margin: 0;
+}
+
+.review-more {
+  flex: 1 1 160px;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  font-size: 12px;
+}
+
+.status-action-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.status-error {
+  margin: 10px 0 0;
+  color: var(--danger);
+}
+
 /* ------------------------------------------------------------ versions */
 
 .versions-nav {

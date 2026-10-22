@@ -61,6 +61,7 @@
       stackMenuOpen: false,
       versionsMenuOpen: false,
       statusOpen: false,
+      statusEdit: { picked: null, more: '', running: null, error: '' },
       ship: { method: null, deleteBranch: null, running: false, progress: {}, errors: {} },
     };
   }
@@ -451,11 +452,32 @@
         renderStatusNav();
       } else if (event.target.closest('[data-ship-confirm]')) {
         shipStack();
+      } else if (event.target.closest('[data-status-change]')) {
+        changeStatus(event.target.closest('[data-status-change]').getAttribute('data-status-change'));
       }
     });
     el.statusNav.addEventListener('change', (event) => {
       if (event.target.matches('[data-ship-delete]')) {
         state.ship.deleteBranch = event.target.checked;
+      } else if (event.target.matches('[data-status-reviewer]')) {
+        const login = event.target.getAttribute('data-status-reviewer');
+        const picked = pickedReviewers();
+        if (event.target.checked) {
+          picked.add(login);
+        } else {
+          picked.delete(login);
+        }
+      }
+    });
+    el.statusNav.addEventListener('input', (event) => {
+      if (event.target.matches('[data-status-more]')) {
+        state.statusEdit.more = event.target.value;
+      }
+    });
+    el.statusNav.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && event.target.matches('[data-status-more]')) {
+        event.preventDefault();
+        changeStatus('review');
       }
     });
     document.addEventListener('click', (event) => {
@@ -1026,8 +1048,8 @@
   const METHOD_LABELS = { MERGE: 'Merge commit', SQUASH: 'Squash', REBASE: 'Rebase' };
   const STATUS_NOTES = {
     UNDER_REVIEW: 'Ship it shows up here once a reviewer accepts.',
-    CHANGES_REQUESTED: 'A reviewer asked for changes. Push them and ask for another look.',
-    DRAFT: 'Mark it ready for review on GitHub to ask for reviews.',
+    CHANGES_REQUESTED: 'A reviewer asked for changes. Push them, then ask for another look.',
+    DRAFT: 'Not ready for review yet.',
     MERGED: 'Shipped.',
     CLOSED: 'Closed without merging.',
   };
@@ -1122,7 +1144,150 @@
         <dt>Checks</dt><dd>${checks ? `${checksIcon(checks.overall)} ${checks.text || 'None'}` : '<span class="muted">No checks</span>'}</dd>
       </dl>
       ${ship ? renderShipSection(ship) : `<p class="muted status-note">${STATUS_NOTES[pr.reviewStatus] || ''}</p>`}
+      ${renderStatusActions()}
     `;
+  }
+
+  const STATUS_ACTIONS = {
+    review: ['Request review', 'Asking…'],
+    ready: ['Ready for review', 'Publishing…'],
+    draft: ['Convert to draft', 'Converting…'],
+    close: ['Close', 'Closing…'],
+    reopen: ['Reopen', 'Reopening…'],
+  };
+
+  // The author changes status here, as in Phabricator: ask for review, go back to a draft, close
+  // or reopen. Reviewers change it by reviewing.
+  function renderStatusActions() {
+    const { pr, viewer } = state.data;
+    if (pr.author.login !== viewer || pr.merged) {
+      return '';
+    }
+    const { running, error } = state.statusEdit;
+    const button = (action, label, primary) => {
+      const [idle, busy] = STATUS_ACTIONS[label];
+      return `<button type="button"${primary ? ' class="primary-action"' : ''} data-status-change="${action}"${running ? ' disabled' : ''}>${running === action ? busy : idle}</button>`;
+    };
+    const closed = pr.state === 'CLOSED';
+    const buttons = [];
+    if (!closed && pr.viewerCanUpdate) {
+      buttons.push(button('review', pr.isDraft ? 'ready' : 'review', true));
+      if (!pr.isDraft) {
+        buttons.push(button('draft', 'draft'));
+      }
+    }
+    if (!closed && pr.viewerCanClose) {
+      buttons.push(button('close', 'close'));
+    }
+    if (closed && pr.viewerCanReopen) {
+      buttons.push(button('reopen', 'reopen'));
+    }
+    if (!buttons.length) {
+      return '';
+    }
+    return `
+      <div class="status-actions">
+        <div class="status-actions-heading">Change status</div>
+        ${!closed && pr.viewerCanUpdate ? renderReviewerPicks() : ''}
+        <div class="status-action-buttons">${buttons.join('')}</div>
+        ${error ? `<p class="status-error">${escapeHtml(error)}</p>` : ''}
+      </div>
+    `;
+  }
+
+  // Everyone who has reviewed and isn't asked already. Asking one of them again is GitHub's
+  // re-request; whoever is blocking starts ticked.
+  function reviewCandidates() {
+    const pr = state.data.pr;
+    const people = new Map();
+    pr.reviewers.forEach((reviewer) => {
+      if (!reviewer.team) {
+        people.set(reviewer.login, reviewer);
+      }
+    });
+    pr.timeline.forEach((item) => {
+      if (item.type === 'review' && !people.has(item.author.login)) {
+        people.set(item.author.login, { ...item.author, state: 'COMMENTED' });
+      }
+    });
+    return Array.from(people.values())
+      .filter((person) => !person.bot && person.state !== 'REQUESTED' && person.login !== pr.author.login);
+  }
+
+  function pickedReviewers() {
+    if (!state.statusEdit.picked) {
+      state.statusEdit.picked = new Set(reviewCandidates()
+        .filter((person) => person.state === 'CHANGES_REQUESTED')
+        .map((person) => person.login));
+    }
+    return state.statusEdit.picked;
+  }
+
+  function renderReviewerPicks() {
+    const picked = pickedReviewers();
+    const disabled = state.statusEdit.running ? ' disabled' : '';
+    const people = reviewCandidates().map((person) => {
+      const [icon, label] = REVIEWER_STATES[person.state] || REVIEWER_STATES.COMMENTED;
+      return `
+        <label class="reviewer review-pick reviewer-${person.state.toLowerCase()}" title="${escapeAttr(`${person.login}: ${label}`)}">
+          <input type="checkbox" data-status-reviewer="${escapeAttr(person.login)}"${picked.has(person.login) ? ' checked' : ''}${disabled}>
+          ${avatar(person, 18)}${escapeHtml(person.login)}<span class="reviewer-state" aria-label="${escapeAttr(label)}">${icon}</span>
+        </label>
+      `;
+    }).join('');
+    return `
+      <div class="review-picks">
+        ${people}
+        <input type="text" class="review-more" data-status-more value="${escapeAttr(state.statusEdit.more)}"
+          placeholder="Add reviewers by login" aria-label="More reviewers, by GitHub login" autocomplete="off" spellcheck="false"${disabled}>
+      </div>
+    `;
+  }
+
+  async function changeStatus(action) {
+    const load = pageLoad;
+    const pr = state.data.pr;
+    const edit = state.statusEdit;
+    if (edit.running) {
+      return;
+    }
+    const typed = edit.more.split(/[\s,]+/).map((login) => login.replace(/^@/, '')).filter(Boolean);
+    const reviewers = action === 'review' ? Array.from(new Set([...pickedReviewers(), ...typed])) : [];
+    if (action === 'review' && !pr.isDraft && !reviewers.length) {
+      edit.error = 'Pick someone to ask for a review.';
+      renderStatusNav();
+      return;
+    }
+    edit.running = action;
+    edit.error = '';
+    renderStatusNav();
+    try {
+      await api(prApi('status'), { body: { action, reviewers } });
+    } catch (err) {
+      if (load === pageLoad) {
+        edit.running = null;
+        edit.error = err.message;
+        renderStatusNav();
+        await refreshAfterChange();
+      }
+      return;
+    }
+    if (load !== pageLoad) {
+      return;
+    }
+    const names = reviewers.map(escapeHtml).join(', ');
+    const done = {
+      review: pr.isDraft
+        ? `#${pr.number} is ready for review${names ? `; asked ${names}` : ''}.`
+        : `Asked ${names} for a review.`,
+      draft: `#${pr.number} is a draft.`,
+      close: `Closed #${pr.number}.`,
+      reopen: `Reopened #${pr.number}.`,
+    };
+    showToast(done[action], 'success');
+    state.statusEdit = { picked: null, more: '', running: null, error: '' };
+    state.statusOpen = false;
+    await refreshAfterChange();
   }
 
   function renderShipSection(ship) {
@@ -1239,10 +1404,10 @@
     if (complete) {
       state.statusOpen = false;
     }
-    await refreshAfterShip();
+    await refreshAfterChange();
   }
 
-  async function refreshAfterShip() {
+  async function refreshAfterChange() {
     const load = pageLoad;
     try {
       const data = await api(prApi('pr'));
@@ -1607,19 +1772,20 @@
     return `<a class="user-link" href="https://github.com/${escapeAttr(login)}" target="_blank" rel="noreferrer noopener">${escapeHtml(login)}</a>`;
   }
 
+  const REVIEWER_STATES = {
+    APPROVED: ['✓', 'Accepted'],
+    CHANGES_REQUESTED: ['✕', 'Requested changes'],
+    COMMENTED: ['…', 'Commented'],
+    DISMISSED: ['–', 'Dismissed'],
+    REQUESTED: ['◦', 'Review requested'],
+  };
+
   function renderReviewers(reviewers) {
     if (!reviewers.length) {
       return '<span class="muted">None</span>';
     }
-    const labels = {
-      APPROVED: ['✓', 'Accepted'],
-      CHANGES_REQUESTED: ['✕', 'Requested changes'],
-      COMMENTED: ['…', 'Commented'],
-      DISMISSED: ['–', 'Dismissed'],
-      REQUESTED: ['◦', 'Review requested'],
-    };
     return `<span class="reviewer-list">${reviewers.map((reviewer) => {
-      const [icon, label] = labels[reviewer.state] || labels.REQUESTED;
+      const [icon, label] = REVIEWER_STATES[reviewer.state] || REVIEWER_STATES.REQUESTED;
       return `<span class="reviewer reviewer-${reviewer.state.toLowerCase()}" title="${escapeAttr(`${reviewer.login}: ${label}`)}">
         ${reviewer.team ? '<span class="team-icon" aria-hidden="true">👥</span>' : avatar(reviewer, 18)}
         ${escapeHtml(reviewer.login)}<span class="reviewer-state" aria-label="${escapeAttr(label)}">${icon}</span>

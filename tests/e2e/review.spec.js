@@ -349,6 +349,55 @@ test('a pull request under review shows a yellow status, and reviewers get the r
   await status.click();
   await expect(page.locator('.status-popover')).toContainText('Ship it shows up here once a reviewer accepts.');
   await expect(page.locator('.status-popover .reviewer')).toContainText('me');
+  await expect(page.locator('.status-popover .status-actions')).toHaveCount(0);
+});
+
+test('asking a blocking reviewer again turns changes requested back into under review', async ({ page }) => {
+  github.state.prs[1].blockedBy = 'kent';
+  await page.goto(`${base}/diffs/1`);
+  const status = page.locator('[data-status-toggle]');
+  await expect(status).toHaveText('Changes requested');
+  await status.click();
+  const popover = page.locator('.status-popover');
+  await expect(popover.locator('[data-status-reviewer="kent"]')).toBeChecked();
+  await popover.locator('[data-status-more]').fill('@alice');
+  await popover.locator('[data-status-change="review"]').click();
+  await expect(page.locator('#toast')).toContainText('Asked kent, alice for a review.');
+  await expect(status).toHaveText('Under review');
+  await status.click();
+  await expect(popover.locator('.reviewer-requested')).toHaveText([/kent/, /alice/]);
+  await expect(popover.locator('[data-status-reviewer]')).toHaveCount(0);
+  expect(github.state.calls.map((call) => call.input)).toEqual([{ pullRequestId: 'PR_1', userLogins: ['kent', 'alice'], union: true }]);
+});
+
+test('the author moves a pull request to a draft and back, closes it and reopens it', async ({ page }) => {
+  await page.goto(`${base}/diffs/1`);
+  const status = page.locator('[data-status-toggle]');
+  const change = (action) => page.locator(`.status-popover [data-status-change="${action}"]`);
+  await expect(status).toHaveText('Under review');
+
+  await status.click();
+  await expect(change('review')).toHaveText('Request review');
+  await change('review').click();
+  await expect(page.locator('.status-error')).toHaveText('Pick someone to ask for a review.');
+  await change('draft').click();
+  await expect(status).toHaveText('Draft');
+
+  await status.click();
+  await expect(change('draft')).toHaveCount(0);
+  await expect(change('review')).toHaveText('Ready for review');
+  await change('review').click();
+  await expect(page.locator('#toast')).toContainText('#1 is ready for review.');
+  await expect(status).toHaveText('Under review');
+
+  await status.click();
+  await change('close').click();
+  await expect(status).toHaveText('Closed');
+  await status.click();
+  await expect(change('review')).toHaveCount(0);
+  await change('reopen').click();
+  await expect(status).toHaveText('Under review');
+  expect(callNames()).toEqual(['convertPullRequestToDraft', 'markPullRequestReadyForReview', 'closePullRequest', 'reopenPullRequest']);
 });
 
 test('your own accepted pull request hides the review tools and ships with one click', async ({ page }) => {
@@ -372,6 +421,27 @@ test('your own accepted pull request hides the review tools and ships with one c
   await expect(page.locator('#toast')).toContainText('Shipped #1 into main.');
   await expect(page.locator('[data-status-toggle]')).toHaveText('Merged');
   expect(shipCalls()).toEqual(['mergePullRequest PR_1', 'updatePullRequest PR_2']);
+});
+
+test('a failed reviewer request shows the published draft and preserves the reviewer input', async ({ page }) => {
+  github.state.prs[1].draft = true;
+  github.state.prs[1].failReviewRequest = true;
+  await page.goto(`${base}/diffs/1`);
+  const status = page.locator('[data-status-toggle]');
+  await expect(status).toHaveText('Draft');
+  await status.click();
+  const popover = page.locator('.status-popover');
+  await popover.locator('[data-status-more]').fill('kent');
+  await popover.locator('[data-status-change="review"]').click();
+  await expect(popover.locator('.status-error')).toHaveText('Could not resolve the requested reviewer.');
+  await expect(status).toHaveText('Under review');
+  await expect(popover.locator('[data-status-more]')).toHaveValue('kent');
+  await expect(popover.locator('[data-status-change="review"]')).toHaveText('Request review');
+  expect(callNames()).toEqual(['markPullRequestReadyForReview', 'requestReviewsByLogin']);
+  github.state.prs[1].failReviewRequest = false;
+  await popover.locator('[data-status-change="review"]').click();
+  await expect(page.locator('#toast')).toContainText('Asked kent for a review.');
+  expect(callNames()).toEqual(['markPullRequestReadyForReview', 'requestReviewsByLogin', 'requestReviewsByLogin']);
 });
 
 test('shipping higher in the stack lands everything below it first', async ({ page }) => {
@@ -416,6 +486,27 @@ test('ship it waits on every pull request below, and stops at the first failure'
   await expect(page.locator('#toast')).toContainText('Shipped #1; the next one failed.');
   await expect(page.locator('.ship-item.ship-failed')).toContainText('Required status check "lint" is failing.');
   expect(shipCalls()).toEqual(['mergePullRequest PR_1', 'updatePullRequest PR_2', 'mergePullRequest PR_2']);
+});
+
+test('the inbox can retry a failed load without reloading the page', async ({ page }) => {
+  let requests = 0;
+  await page.route('**/api/inbox', async (route) => {
+    requests++;
+    if (requests === 1) {
+      await route.fulfill({ status: 502, contentType: 'application/json',
+        body: JSON.stringify({ error: 'GitHub is temporarily unavailable (HTTP 502). Try again in a moment.' }) });
+    } else {
+      await route.continue();
+    }
+  });
+  await page.goto(`${base}/`);
+  await expect(page.locator('.fatal')).toContainText('GitHub is temporarily unavailable');
+  await page.getByRole('button', { name: 'Try again' }).click();
+  await expect(page.locator('#viewer-login')).toHaveText('Signed in to GitHub as me');
+  await expect(page.locator('.fatal')).toHaveCount(0);
+  await expect(page.locator('.inbox-section', { hasText: 'Your pull requests' }).locator('.inbox-number'))
+    .toHaveText(['#21', '#20', '#30']);
+  expect(requests).toBe(2);
 });
 
 test('the inbox draws each stack top first over its trunk', async ({ page }) => {

@@ -18,6 +18,10 @@
   });
   input.addEventListener('input', () => input.setCustomValidity(''));
 
+  inbox.addEventListener('click', (event) => {
+    if (event.target.closest('[data-inbox-retry]')) load();
+  });
+
   load();
 
   function targetPath(value) {
@@ -30,12 +34,13 @@
   }
 
   async function load() {
+    inbox.innerHTML = '<div class="empty">Loading your inbox…</div>';
     try {
       const data = await api('/api/inbox');
       document.getElementById('viewer-login').textContent = `Signed in to GitHub as ${data.viewer}`;
       inbox.innerHTML = data.sections.map(renderSection).join('');
     } catch (err) {
-      inbox.innerHTML = `<div class="fatal"><strong>Couldn't load your inbox.</strong><p>${escapeHtml(err.message)}</p></div>`;
+      inbox.innerHTML = `<div class="fatal"><strong>Couldn't load your inbox.</strong><p>${escapeHtml(err.message)}</p><button type="button" data-inbox-retry>Try again</button></div>`;
     }
   }
 

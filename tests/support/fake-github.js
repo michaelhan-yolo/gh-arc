@@ -140,13 +140,19 @@ function createState() {
         comments: { nodes: [comment('C_old', 'bob', 'Rename v5?', '@@ -1,5 +1,5 @@\n const v1 = 1;\n-const v5 = 5;\n+const v5 = 50;')] },
       },
     ],
-    // Per pull request: where it sits, who wrote it, and whether it is accepted or merged.
+    // Per pull request: where it sits, who wrote it, who is asked to review it, who blocks it,
+    // and whether it is a draft, accepted, closed or merged.
     prs: Object.fromEntries(STACK.concat(MINE).map((pr) => [pr.number, {
       baseRefName: pr.baseRefName,
       author: pr.number === 1 || MINE.includes(pr) ? 'me' : 'dana',
+      requested: pr.number === 2 ? ['me'] : [],
+      blockedBy: null,
+      draft: pr.number === 3,
       approved: false,
+      closed: false,
       merged: false,
       failMerge: false,
+      failReviewRequest: false,
     }])),
     calls: [],
   };
@@ -192,8 +198,8 @@ function summary(state, pr) {
     number: pr.number,
     title: pr.title,
     url: `https://github.com/${OWNER}/${REPO}/pull/${pr.number}`,
-    state: live.merged ? 'MERGED' : 'OPEN',
-    isDraft: pr.number === 3,
+    state: live.merged ? 'MERGED' : live.closed ? 'CLOSED' : 'OPEN',
+    isDraft: live.draft,
     merged: live.merged,
     baseRefName: live.baseRefName,
     headRefName: pr.headRefName,
@@ -201,9 +207,15 @@ function summary(state, pr) {
     headRefOid: headOid(pr.number),
     additions: 3,
     deletions: 2,
-    reviewDecision: onTrunk ? (live.approved ? 'APPROVED' : 'REVIEW_REQUIRED') : null,
+    reviewDecision: onTrunk ? (live.blockedBy ? 'CHANGES_REQUESTED' : live.approved ? 'APPROVED' : 'REVIEW_REQUIRED') : null,
     mergeStateStatus: onTrunk && !live.approved ? 'BLOCKED' : 'CLEAN',
-    latestOpinionatedReviews: { nodes: live.approved ? [{ state: 'APPROVED', submittedAt: '2026-10-02T11:00:00Z', author: actor('carol') }] : [] },
+    latestOpinionatedReviews: {
+      nodes: [
+        live.approved ? { state: 'APPROVED', submittedAt: '2026-10-02T11:00:00Z', author: actor('carol') } : null,
+        live.blockedBy ? { state: 'CHANGES_REQUESTED', submittedAt: '2026-10-02T12:00:00Z', author: actor(live.blockedBy) } : null,
+      ].filter(Boolean),
+    },
+    reviewRequests: { nodes: live.requested.map((login) => ({ requestedReviewer: { __typename: 'User', ...actor(login) } })) },
     author: actor(live.author),
     lastCommit: { nodes: [{ commit: { statusCheckRollup: { state: 'SUCCESS' } } }] },
     updatedAt: '2026-10-02T10:00:00Z',
@@ -223,8 +235,10 @@ function pullRequest(state, number) {
     baseRefOid: BASE_OID,
     changedFiles: 2,
     mergeable: 'MERGEABLE',
+    viewerCanUpdate: true,
+    viewerCanClose: !state.prs[number].closed,
+    viewerCanReopen: state.prs[number].closed,
     labels: { nodes: [{ name: 'frontend', color: '1d76db' }] },
-    reviewRequests: { nodes: [{ requestedReviewer: { __typename: 'User', login: 'me', avatarUrl: '' } }] },
     pendingReviews: {
       nodes: state.pendingReview
         ? [{ id: state.pendingReview.id, author: actor(state.viewer), comments: { totalCount: state.pendingReview.threads.length } }]
@@ -300,6 +314,13 @@ function pullRequest(state, number) {
   };
 }
 
+const STATE_CHANGES = {
+  convertPullRequestToDraft: { draft: true },
+  markPullRequestReadyForReview: { draft: false },
+  closePullRequest: { closed: true },
+  reopenPullRequest: { closed: false },
+};
+
 function graphql(state, query, variables) {
   const input = variables && variables.input;
   const record = (name) => state.calls.push({ name, input });
@@ -346,6 +367,23 @@ function graphql(state, query, variables) {
     }
     live.merged = true;
     return { mergePullRequest: { pullRequest: { number, merged: true, url: `https://github.com/${OWNER}/${REPO}/pull/${number}` } } };
+  }
+
+  if (query.includes('requestReviewsByLogin(input')) {
+    record('requestReviewsByLogin');
+    const live = state.prs[numberOf(input.pullRequestId)];
+    if (live.failReviewRequest) {
+      return { errors: [{ message: 'Could not resolve the requested reviewer.' }] };
+    }
+    live.requested = Array.from(new Set(live.requested.concat(input.userLogins)));
+    return { requestReviewsByLogin: { pullRequest: { id: input.pullRequestId } } };
+  }
+  const stateChange = Object.entries(STATE_CHANGES).find(([name]) => query.includes(`${name}(input`));
+  if (stateChange) {
+    const [name, change] = stateChange;
+    record(name);
+    Object.assign(state.prs[numberOf(input.pullRequestId)], change);
+    return { [name]: { pullRequest: { id: input.pullRequestId } } };
   }
 
   if (query.includes('addPullRequestReview(input')) {
@@ -397,12 +435,15 @@ function graphql(state, query, variables) {
     state.viewed[input.path] = viewed;
     return { [viewed ? 'markFileAsViewed' : 'unmarkFileAsViewed']: { clientMutationId: null } };
   }
-  if (query.includes('needsReview: search')) {
+  if (query.includes('query Inbox(')) {
+    const prs = variables.query.includes('review-requested:') ? STACK.slice(0, 3)
+      : variables.query.includes('reviewed-by:') ? [STACK[3]] : MINE;
     return {
       viewer: { login: state.viewer },
-      needsReview: { nodes: STACK.slice(0, 3).map((pr) => summary(state, pr)) },
-      mine: { nodes: MINE.map((pr) => summary(state, pr)) },
-      reviewed: { nodes: [summary(state, STACK[3])] },
+      search: {
+        nodes: prs.map((pr) => summary(state, pr)),
+        pageInfo: { hasNextPage: false, endCursor: null },
+      },
     };
   }
   if (query.includes('pullRequests(states: OPEN')) {

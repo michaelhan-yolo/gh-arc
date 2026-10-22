@@ -305,11 +305,83 @@ test('review status comes from the review decision, or the reviews where branche
   assert.equal(reviewStatus({ state: 'OPEN', reviewDecision: null, latestOpinionatedReviews: reviews() }), 'UNDER_REVIEW');
 });
 
+test('a reviewer who requested changes and is asked again is reviewing, not blocking', () => {
+  const { reviewStatus } = require('../../lib/normalize');
+  const verdicts = (...logins) => ({ nodes: logins.map((login) => ({ state: 'CHANGES_REQUESTED', author: { login } })) });
+  const asked = (...logins) => ({
+    nodes: logins.map((login) => ({ requestedReviewer: { __typename: login.startsWith('@') ? 'Team' : 'User', login, name: login } })),
+  });
+  const pr = (decision, blockers, requested) => ({
+    state: 'OPEN',
+    reviewDecision: decision,
+    latestOpinionatedReviews: verdicts(...blockers),
+    reviewRequests: asked(...requested),
+  });
+  assert.equal(reviewStatus(pr('CHANGES_REQUESTED', ['kent'], [])), 'CHANGES_REQUESTED');
+  assert.equal(reviewStatus(pr('CHANGES_REQUESTED', ['kent'], ['kent'])), 'UNDER_REVIEW');
+  assert.equal(reviewStatus(pr(null, ['kent'], ['kent'])), 'UNDER_REVIEW');
+  assert.equal(reviewStatus(pr('CHANGES_REQUESTED', ['kent', 'ali'], ['kent'])), 'CHANGES_REQUESTED');
+  assert.equal(reviewStatus(pr('CHANGES_REQUESTED', ['kent'], ['@kent'])), 'CHANGES_REQUESTED');
+  assert.equal(reviewStatus(pr('CHANGES_REQUESTED', [], ['kent'])), 'CHANGES_REQUESTED');
+});
+
+test('status changes ask reviewers, publish a draft first, and refuse anything else', async () => {
+  const status = (number, body) => post(prApiFor(number, 'status'), body);
+  assert.equal((await status(1, { action: 'review', reviewers: [] })).status, 400);
+  assert.equal((await status(1, { action: 'review', reviewers: ['not a login'] })).status, 400);
+  assert.equal((await status(1, { action: 'merge' })).status, 400);
+  assert.equal((await post(prApiFor(1, 'status'), { action: 'close' }, {})).status, 403);
+  assert.deepEqual(github.state.calls, []);
+
+  assert.equal((await status(1, { action: 'review', reviewers: ['kent', 'ali'] })).status, 200);
+  assert.equal((await status(3, { action: 'review', reviewers: [] })).status, 200);
+  assert.equal((await status(1, { action: 'draft' })).status, 200);
+  assert.equal((await status(1, { action: 'close' })).status, 200);
+  assert.equal((await status(1, { action: 'reopen' })).status, 200);
+  assert.deepEqual(github.state.calls.map((call) => [call.name, call.input.pullRequestId]), [
+    ['requestReviewsByLogin', 'PR_1'],
+    ['markPullRequestReadyForReview', 'PR_3'],
+    ['convertPullRequestToDraft', 'PR_1'],
+    ['closePullRequest', 'PR_1'],
+    ['reopenPullRequest', 'PR_1'],
+  ]);
+  assert.deepEqual(github.state.calls[0].input, { pullRequestId: 'PR_1', userLogins: ['kent', 'ali'], union: true });
+});
+
+test('the inbox shows a status change right away', async () => {
+  const inboxStatus = async () => {
+    const { body } = await get(`${base}/api/inbox`);
+    const mine = body.sections.find((section) => section.key === 'mine');
+    return mine.groups.flatMap((group) => group.items).find((item) => item.pr.number === 30).pr.reviewStatus;
+  };
+  github.state.prs[30].blockedBy = 'kent';
+  await post(prApiFor(30, 'status'), { action: 'reopen' });
+  assert.equal(await inboxStatus(), 'CHANGES_REQUESTED');
+  await post(prApiFor(30, 'status'), { action: 'review', reviewers: ['kent'] });
+  assert.equal(await inboxStatus(), 'UNDER_REVIEW');
+});
+
 test('you cannot accept or block your own pull request', async () => {
   const { status, body } = await post(prApiFor(1, 'submit'), { event: 'APPROVE', body: 'LGTM' });
   assert.equal(status, 400);
   assert.match(body.error, /your own pull request/);
   assert.deepEqual(github.state.calls, []);
+});
+
+test('publishing a draft invalidates the inbox even if requesting reviewers fails', async () => {
+  const inboxStatus = async () => {
+    const { body } = await get(`${base}/api/inbox`);
+    return body.sections.find((section) => section.key === 'mine').groups
+      .flatMap((group) => group.items).find((item) => item.pr.number === 30).pr.reviewStatus;
+  };
+  await post(prApiFor(30, 'status'), { action: 'draft' });
+  assert.equal(await inboxStatus(), 'DRAFT');
+  github.state.prs[30].failReviewRequest = true;
+  const result = await post(prApiFor(30, 'status'), { action: 'review', reviewers: ['kent'] });
+  assert.equal(result.status, 422);
+  assert.match(result.body.error, /Could not resolve the requested reviewer/);
+  assert.equal(github.state.prs[30].draft, false);
+  assert.equal(await inboxStatus(), 'UNDER_REVIEW');
 });
 
 test('a stack ships bottom first: merge, move the next onto the trunk, merge it', async () => {
