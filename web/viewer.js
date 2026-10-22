@@ -3,7 +3,7 @@
 // The diff engine (patch parsing, split/unified tables, context expansion, range selection)
 // comes from local-arc (MIT, Emerson Ding). The GitHub layer around it is gh-arc's.
 (function () {
-  const { api, avatar, checksIcon, diffPath, escapeHtml, homeRepo, prepareLinks, stateBadge, statusChip, statusInfo, statusMark, time } = window.GhArc;
+  const { api, avatar, checksIcon, diffPath, escapeHtml, homeRepo, onGitHub, prepareLinks, stateBadge, statusChip, statusInfo, statusMark, time } = window.GhArc;
   const { applyHeaderLine, parseDiffGitLine } = window.GhArcPatchPaths;
   const escapeAttr = escapeHtml;
   const LARGE_FILE_LINES = 1500;
@@ -856,7 +856,7 @@
     const { pr, repo } = state.data;
     el.heading.innerHTML = `<span class="heading-number">#${pr.number}</span> ${escapeHtml(pr.title)}`;
     el.heading.title = pr.title;
-    el.subheading.innerHTML = `${escapeHtml(repo.nameWithOwner)} · <code>${escapeHtml(pr.headRefName)}</code> → <code>${escapeHtml(pr.baseRefName)}</code>`;
+    el.subheading.innerHTML = `${escapeHtml(repo.nameWithOwner)} · <code>${escapeHtml(pr.headRefName)}</code> → <code>${escapeHtml(pr.baseRefName)}</code> · <a class="github-link" href="${escapeAttr(onGitHub(pr.url))}">GitHub</a>`;
   }
 
   function renderStackNav() {
@@ -1577,7 +1577,7 @@
       <section class="diff-metadata pr-details" aria-label="Pull request details">
         <div class="metadata-header">
           <div class="pr-header-left">${stateBadge(pr.state)}<span>${escapeHtml(repo.nameWithOwner)} #${pr.number}</span></div>
-          <a class="external-link" href="${escapeAttr(pr.url)}" target="_blank" rel="noreferrer noopener">Open on GitHub ↗</a>
+          <a class="external-link" href="${escapeAttr(onGitHub(pr.url))}" target="_blank" rel="noreferrer noopener">Open on GitHub ↗</a>
         </div>
         <div class="metadata-body">
           <h2 class="pr-title">${escapeHtml(pr.title)}</h2>
@@ -1952,7 +1952,7 @@
                 ${thread.resolved ? '<span class="pill pill-resolved">Resolved</span>' : ''}
                 ${thread.outdated ? '<span class="pill">Outdated</span>' : ''}
               </div>
-              <a class="activity-time" href="${escapeAttr(first.url)}" target="_blank" rel="noreferrer noopener">${time(first.createdAt)}</a>
+              <a class="activity-time" href="${escapeAttr(onGitHub(first.url))}" target="_blank" rel="noreferrer noopener">${time(first.createdAt)}</a>
             </header>
             ${thread.diffHunk ? renderDiffHunk(thread.diffHunk, 3) : ''}
             <div class="markdown-body activity-body">${first.bodyHTML}</div>
@@ -2000,7 +2000,7 @@
                 <span class="activity-action">${action}</span>
                 ${inline}
               </div>
-              <a class="activity-time" href="${escapeAttr(item.url)}" target="_blank" rel="noreferrer noopener">${time(item.createdAt)}</a>
+              <a class="activity-time" href="${escapeAttr(onGitHub(item.url))}" target="_blank" rel="noreferrer noopener">${time(item.createdAt)}</a>
             </header>
             ${item.bodyHTML ? `<div class="markdown-body activity-body">${item.bodyHTML}</div>` : ''}
           </div>
@@ -2144,7 +2144,7 @@
         return;
       }
       const labels = { APPROVED: 'Accepted', CHANGES_REQUESTED: 'Requested changes', COMMENTED: 'Review submitted' };
-      showToast(`${labels[result.review.state] || 'Review submitted'}. <a href="${escapeAttr(result.review.url)}" target="_blank" rel="noreferrer noopener">View on GitHub</a>`, 'success');
+      showToast(`${labels[result.review.state] || 'Review submitted'}. <a href="${escapeAttr(onGitHub(result.review.url))}" target="_blank" rel="noreferrer noopener">View on GitHub</a>`, 'success');
       await reloadAfterSubmit();
     } catch (err) {
       state.submitting = false;
@@ -2452,7 +2452,7 @@
     }
     actions.push(`<button type="button" data-comment-toggle="${escapeAttr(thread.id)}">${collapsed ? 'Show' : 'Hide'}</button>`);
     if (first && first.url) {
-      actions.push(`<a class="icon-link" href="${escapeAttr(first.url)}" target="_blank" rel="noreferrer noopener" title="Open on GitHub">↗</a>`);
+      actions.push(`<a class="icon-link" href="${escapeAttr(onGitHub(first.url))}" target="_blank" rel="noreferrer noopener" title="Open on GitHub">↗</a>`);
     }
     return `
       <div class="inline-comment thread${thread.resolved ? ' resolved' : ''}${collapsed ? ' collapsed' : ''}" data-comment-id="${escapeAttr(thread.id)}" tabindex="0">
@@ -2483,7 +2483,7 @@
         <div class="thread-comment-meta">
           ${avatar(comment.author, 18)}
           <strong>${escapeHtml(comment.author.login)}</strong>
-          <a class="muted" href="${escapeAttr(comment.url)}" target="_blank" rel="noreferrer noopener">${time(comment.createdAt)}</a>
+          <a class="muted" href="${escapeAttr(onGitHub(comment.url))}" target="_blank" rel="noreferrer noopener">${time(comment.createdAt)}</a>
           ${comment.pending ? '<span class="pill pill-pending">Pending</span>' : ''}
         </div>
         <div class="markdown-body comment-markdown">${comment.bodyHTML}</div>
