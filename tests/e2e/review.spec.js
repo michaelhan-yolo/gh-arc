@@ -16,6 +16,7 @@ let base;
 test.beforeAll(async () => {
   github = await fake.startFakeGitHub();
   process.env.GH_ARC_API_URL = github.url;
+  process.env.GH_ARC_WEB_URL = github.url;
   process.env.GH_ARC_TOKEN = 'test-token';
   process.env.GH_ARC_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'gh-arc-e2e-'));
 });
@@ -517,6 +518,48 @@ test('the inbox draws each stack top first over its trunk', async ({ page }) => 
   await page.locator('#open-input').fill('https://github.com/octo/widgets/pull/2/files');
   await page.locator('#open-input').press('Enter');
   await expect(page).toHaveURL(`${base}/diffs/2`);
+});
+
+test('uploaded images in the description load from gh-arc after their signed links expire', async ({ page }) => {
+  await page.goto(`${base}/diffs/3`);
+  const images = page.locator('.diff-description img');
+  await expect(images).toHaveCount(2);
+  expect(await images.evaluateAll((nodes) => nodes.map((node) => node.getAttribute('src')))).toEqual([
+    '/api/image/11111111-1111-4111-8111-111111111111',
+    '/api/image/22222222-2222-4222-8222-222222222222',
+  ]);
+  await expect.poll(() => images.evaluateAll((nodes) => nodes.map((node) => node.naturalWidth))).toEqual([420, 1600]);
+  // width="420" holds inside the screenshot table, and the wide one stays inside the column.
+  expect((await images.nth(0).boundingBox()).width).toBe(420);
+  const description = page.locator('.diff-description');
+  expect(await description.evaluate((node) => node.scrollWidth <= node.clientWidth)).toBe(true);
+  await expect(page.locator('.diff-description a').first()).toHaveAttribute('href', '/api/image/11111111-1111-4111-8111-111111111111');
+});
+
+test('image files show before and after, with swipe and flip', async ({ page }) => {
+  await page.goto(`${base}/diffs/3`);
+  const logo = page.locator('article.file', { hasText: 'assets/logo.png' });
+  await expect(logo.locator('.image-side figcaption')).toHaveText(['Before · 160 × 100', 'After · 160 × 100']);
+  await expect(logo).not.toContainText('Binary files');
+  const badge = page.locator('article.file', { hasText: 'assets/badge.png' });
+  await expect(badge.locator('.image-side figcaption')).toHaveText(['Added · 80 × 80']);
+  await expect(badge.locator('[data-image-mode]')).toHaveCount(0);
+  const icon = page.locator('article.file', { hasText: 'assets/icon.svg' });
+  await expect(icon.locator('.image-side figcaption')).toHaveText(['Deleted · 64 × 64']);
+  await expect(icon.locator('.code-table, table').first()).toContainText('<rect');
+
+  await logo.locator('[data-image-mode="swipe"]').click();
+  await expect(page.locator('[data-image-swipe]')).toHaveCount(1);
+  await logo.locator('[data-image-swipe]').fill('20');
+  await expect(logo.locator('.image-diff')).toHaveAttribute('style', /--swipe: 20%/);
+
+  await logo.locator('[data-image-mode="flip"]').click();
+  await expect(logo.locator('.image-old')).toBeHidden();
+  await logo.locator('[data-image-flip]').click();
+  await expect(logo.locator('.image-old')).toBeVisible();
+  await expect(logo.locator('.image-new')).toBeHidden();
+  await page.reload();
+  await expect(logo.locator('.image-diff')).toHaveAttribute('data-mode', 'flip');
 });
 
 // playwright.config.js maps the diffs host to 127.0.0.1 in Chromium, as gh arc setup does for the Mac.

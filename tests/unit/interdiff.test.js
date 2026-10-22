@@ -87,3 +87,28 @@ test('computeInterdiff leaves base changes out and flags files it could not sepa
   assert.match(result.patch, /-mine\n\+mine again\n/);
   assert.doesNotMatch(result.patch, /same\.js/);
 });
+
+test('computeInterdiff marks changed images binary instead of diffing their bytes', async () => {
+  const png = (tag) => `\x89PNG\r\n\x1a\n\0\0\0\rIHDR${tag}`;
+  const contents = { 'A:logo.png': png('a'), 'B:logo.png': png('b'), 'B:new.png': png('n'), 'A:same.png': png('s'), 'B:same.png': png('s') };
+  const files = (head, names) => names.map((filename) => ({ filename, sha: `${head}-${filename}` }));
+  const compares = {
+    A: { mergeBase: 'base', files: files('A', ['logo.png', 'same.png']) },
+    B: { mergeBase: 'base', files: files('B', ['logo.png', 'new.png', 'same.png']) },
+  };
+  const result = await computeInterdiff({
+    compare: async (base, head) => compares[head],
+    content: async (ref, path) => (contents[`${ref}:${path}`] === undefined ? null : contents[`${ref}:${path}`]),
+    base: 'tip',
+    from: 'A',
+    to: 'B',
+  });
+  assert.equal(result.patch, [
+    'diff --git a/logo.png b/logo.png',
+    'Binary files a/logo.png and b/logo.png differ',
+    'diff --git a/new.png b/new.png',
+    'new file mode 100644',
+    'Binary files /dev/null and b/new.png differ',
+    '',
+  ].join('\n'));
+});

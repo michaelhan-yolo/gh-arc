@@ -9,6 +9,7 @@
   const LARGE_FILE_LINES = 1500;
   const GENERATED_RE = /(^|\/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Cargo\.lock|poetry\.lock|Gemfile\.lock|go\.sum|uv\.lock)$|\.min\.(js|css)$|(^|\/)(__generated__|generated)\/|\.snap$/;
   const HUNK_RE = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/;
+  const IMAGE_FILE_RE = /\.(png|jpe?g|gif|webp|svg|avif|bmp|ico)$/i;
   const ACTIVITY_VISIBLE = 12;
   const LONG_SUMMARY_CHARS = 2500;
   // The pull request on screen. Links between pull requests switch it in place (see navigate),
@@ -20,6 +21,7 @@
 
   const state = {
     mode: readPreference('ghArcMode', 'split'),
+    imageMode: readPreference('ghArcImageMode', 'side'),
     commentsVisible: true,
     inbox: null,
     ...pageState(),
@@ -498,6 +500,8 @@
     el.content.addEventListener('change', onContentChange);
     el.content.addEventListener('input', onContentInput);
     el.content.addEventListener('keydown', onContentKeydown);
+    el.content.addEventListener('load', onImageLoad, true);
+    el.content.addEventListener('error', onImageError, true);
     el.content.addEventListener('toggle', (event) => {
       if (event.target.matches('[data-outdated-details]')) {
         state.outdatedOpen = event.target.open;
@@ -551,6 +555,12 @@
       fetchContext(node);
     } else if ((node = match('[data-file-toggle]'))) {
       toggleFile(Number(node.getAttribute('data-file-toggle')));
+    } else if ((node = match('[data-image-mode]'))) {
+      state.imageMode = node.getAttribute('data-image-mode');
+      writePreference('ghArcImageMode', state.imageMode);
+      state.files.filter((file) => document.querySelector(`[data-image-diff="${file.id}"]`)).forEach(rerenderFile);
+    } else if ((node = match('[data-image-flip]'))) {
+      node.closest('[data-image-diff]').toggleAttribute('data-flipped');
     } else if ((node = match('[data-file-expand]'))) {
       const file = state.files[Number(node.getAttribute('data-file-expand'))];
       state.expandedFiles.add(file.id);
@@ -646,7 +656,9 @@
   }
 
   function onContentInput(event) {
-    if (event.target.matches('[data-review-body]')) {
+    if (event.target.matches('[data-image-swipe]')) {
+      event.target.closest('[data-image-diff]').style.setProperty('--swipe', `${event.target.value}%`);
+    } else if (event.target.matches('[data-review-body]')) {
       state.drafts.body = event.target.value;
       window.clearTimeout(reviewBodyTimer);
       reviewBodyTimer = window.setTimeout(flushReviewBody, 600);
@@ -2327,11 +2339,12 @@
     let body = '';
     if (!collapsed) {
       const seen = { old: new Set(), new: new Set() };
-      const hunks = file.binary
+      const image = renderImageDiff(file);
+      const hunks = file.binary && !image
         ? `<div class="binary-note">${escapeHtml(file.binary)}</div>`
         : file.hunks.map((hunk) => renderHunk(file, hunk, seen)).join('');
-      body = renderFileHeaders(file) + renderFileThreads(file) +
-        (hunks || '<div class="binary-note">No textual changes.</div>');
+      body = renderFileHeaders(file) + renderFileThreads(file) + image +
+        (hunks || (image ? '' : '<div class="binary-note">No textual changes.</div>'));
     } else if (!viewed && isBulky(file) && !state.collapsedFiles.has(file.id)) {
       const reason = GENERATED_RE.test(githubPath(file)) ? 'Generated or lock file' : 'Large diff';
       body = `<div class="file-collapsed-note">${reason} hidden (${file.additions + file.deletions} lines). <button type="button" data-file-expand="${file.id}">Show diff</button></div>`;
@@ -2386,6 +2399,65 @@
   function renderFileHeaders(file) {
     const shown = file.headers.filter((line) => /^(old mode|new mode)/.test(line));
     return shown.length ? `<pre class="headers">${escapeHtml(shown.join('\n'))}</pre>` : '';
+  }
+
+  // Image files show as pictures, before and after; an SVG's text diff stays below them.
+  function renderImageDiff(file) {
+    if (!IMAGE_FILE_RE.test(file.newPath || file.oldPath || '')) {
+      return '';
+    }
+    const sides = ['old', 'new'].filter((side) => (side === 'old' ? file.oldPath : file.newPath));
+    const both = sides.length === 2;
+    const mode = both ? state.imageMode : 'side';
+    const modes = [['side', 'Side by side'], ['swipe', 'Swipe'], ['flip', 'Flip']].map(([key, label]) =>
+      `<button type="button" class="seg${key === mode ? ' active' : ''}" data-image-mode="${key}" aria-pressed="${key === mode}">${label}</button>`).join('');
+    return `
+      <div class="image-diff" data-image-diff="${file.id}" data-mode="${mode}" style="--swipe: 50%">
+        ${both ? `<div class="segmented image-diff-modes" role="group" aria-label="Compare the images">${modes}</div>` : ''}
+        <div class="image-diff-stage"${mode === 'flip' ? ' data-image-flip title="Click to flip between before and after"' : ''}>
+          ${sides.map((side) => renderImageSide(file, side, both)).join('')}
+          ${mode === 'swipe' ? '<input type="range" class="image-swipe" data-image-swipe min="0" max="100" value="50" aria-label="Swipe between before and after">' : ''}
+        </div>
+      </div>
+    `;
+  }
+
+  function renderImageSide(file, side, both) {
+    const label = both ? (side === 'old' ? 'Before' : 'After') : (side === 'old' ? 'Deleted' : 'Added');
+    const filePath = side === 'old' ? file.oldPath : file.newPath;
+    return `
+      <figure class="image-side image-${side}">
+        <div class="image-frame"><img src="${escapeAttr(imageSrc(side, filePath))}" alt="${escapeAttr(`${label}: ${filePath}`)}"></div>
+        <figcaption>${label}<span class="image-size"></span></figcaption>
+      </figure>
+    `;
+  }
+
+  // The old side is the merge base, the parent commit, or in a comparison the older version.
+  function imageSrc(side, filePath) {
+    const params = new URLSearchParams({ path: filePath });
+    const ref = side === 'new' ? state.refs.newRef : state.refs.oldRef || (state.fullContext && RANGE ? RANGE.from : null);
+    if (ref) {
+      params.set('ref', ref);
+    } else {
+      params.set('base', state.data.pr.baseRefOid);
+      params.set('head', state.refs.newRef);
+    }
+    return prApi('image', params.toString());
+  }
+
+  function onImageLoad(event) {
+    const image = event.target;
+    const size = image.matches && image.matches('.image-side img') && image.closest('.image-side').querySelector('.image-size');
+    if (size) {
+      size.textContent = ` · ${image.naturalWidth} × ${image.naturalHeight}`;
+    }
+  }
+
+  function onImageError(event) {
+    if (event.target.matches && event.target.matches('.image-side img')) {
+      event.target.closest('.image-frame').innerHTML = '<span class="image-missing">Couldn’t load this image.</span>';
+    }
   }
 
   function renderFileThreads(file) {

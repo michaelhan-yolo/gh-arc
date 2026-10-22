@@ -83,6 +83,11 @@
       file.oldPath = unquoteGitPath(line.slice(line.indexOf(' from ') + 6));
     } else if (line.startsWith('rename to ') || line.startsWith('copy to ')) {
       file.newPath = unquoteGitPath(line.slice(line.indexOf(' to ') + 4));
+    } else if (line.startsWith('new file mode ')) {
+      // A binary file has no ---/+++ lines to say it was added or deleted.
+      file.oldPath = null;
+    } else if (line.startsWith('deleted file mode ')) {
+      file.newPath = null;
     } else {
       return false;
     }
