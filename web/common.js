@@ -133,6 +133,21 @@
     return `<span class="checks-icon checks-${state.toLowerCase()}" title="${entry[1]}" aria-label="${entry[1]}">${entry[0]}</span>`;
   }
 
+  // A github.com pull request link, marked so the gh-arc browser extension leaves it on GitHub
+  // instead of sending it back here.
+  function onGitHub(href) {
+    let url;
+    try {
+      url = new URL(href);
+    } catch (err) {
+      return href;
+    }
+    if (url.hostname === 'github.com' && /^\/[^/]+\/[^/]+\/pull\/\d+/.test(url.pathname)) {
+      url.searchParams.set('gh-arc', 'off');
+    }
+    return url.toString();
+  }
+
   // Pull request links inside GitHub-rendered markdown open here; everything else opens in a new tab.
   function localPrPath(href) {
     const match = String(href).match(/^https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)(?:\/files)?\/?(#.*)?$/);
@@ -147,6 +162,7 @@
         link.removeAttribute('target');
         return;
       }
+      link.setAttribute('href', onGitHub(link.getAttribute('href')));
       link.setAttribute('target', '_blank');
       link.setAttribute('rel', 'noreferrer noopener');
     });
@@ -160,6 +176,7 @@
     homeRepo,
     escapeHtml,
     localPrPath,
+    onGitHub,
     prepareLinks,
     relativeTime,
     stateBadge,

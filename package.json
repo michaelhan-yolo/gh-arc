@@ -6,7 +6,7 @@
     "gh-arc": "./gh-arc"
   },
   "scripts": {
-    "check": "node --check gh-arc && for f in lib/*.js web/*.js; do node --check $f || exit 1; done",
+    "check": "node --check gh-arc && for f in lib/*.js web/*.js extension/*.js; do node --check $f || exit 1; done",
     "test": "node --test tests/unit/*.test.js",
     "test:e2e": "playwright test"
   },

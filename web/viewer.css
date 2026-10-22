@@ -262,6 +262,14 @@ h1 {
   font-size: 11px;
 }
 
+#pr-subheading .github-link {
+  color: inherit;
+}
+
+#pr-subheading .github-link:hover {
+  color: var(--accent);
+}
+
 .app-icon {
   display: block;
   flex: 0 0 auto;

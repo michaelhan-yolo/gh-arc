@@ -72,6 +72,30 @@ The server acts with your GitHub credentials, so it only answers requests addres
 
 `gh arc setup --dry-run` shows the plan and changes nothing; `gh arc setup --remove` undoes all of it. The rule sends everything on 127.0.0.1 port 80 to gh-arc. Under `diffs`, paths drop the `/diffs` prefix (`/11505`, `/<owner>/<repo>/<number>`); `localhost:7799/diffs/…` keeps working. `gh arc` prints `http://diffs/…` URLs once the name reaches it, and the `localhost` form otherwise.
 
+## Chrome extension
+
+`extension/` is a Chrome extension that opens github.com pull requests in gh-arc. Opening `github.com/<owner>/<repo>/pull/<n>`, or its Files, Commits or Checks tab, lands on that pull request's gh-arc page instead; a commit from the Commits tab opens as that one commit. The extension only finds the gh-arc server on your machine and hands the tab to it, so your token stays in the server.
+
+To install it:
+
+1. Open `chrome://extensions` and turn on **Developer mode**.
+2. Click **Load unpacked** and pick the `extension` folder of gh-arc: your clone, or `~/.local/share/gh/extensions/gh-arc/extension` after `gh extension install`.
+3. Keep a server running with `gh arc serve` (any `gh arc` starts one).
+
+Then:
+
+- **Back to GitHub**: the **GitHub** link after the branches in the top bar, and every other link from gh-arc to a pull request on GitHub, adds `?gh-arc=off`. That pull request then stays on GitHub in that tab until the tab closes.
+- **Off switches**: the extension's toolbar button turns the takeover off everywhere, or only for the repository on screen. On a pull request you kept on GitHub, **Open #n in gh-arc** goes back.
+- **No server**: if nothing answers, GitHub's page stays, with a notice saying how to start gh-arc.
+- **Where pages open**: `http://diffs/` once `gh arc setup` has run, `http://localhost:7799` otherwise. For a server on another port (`gh arc serve -p 7800`), set the address under **Server** in the toolbar button.
+- **Back** returns to the page before the pull request, not to GitHub's copy of it. Landing on the same pull request again within a few seconds of opening it in gh-arc keeps GitHub's page, so nothing can bounce back and forth.
+
+It asks for three permissions:
+
+- `https://github.com/*`, as a content script: to notice pull request pages, including the ones GitHub opens without a page load. It reads only the address. It changes GitHub's page only to keep a new pull request blank for up to a second and a half while it checks for the server, and to show the notice when nothing answers.
+- `http://localhost/*`, `http://127.0.0.1/*` and `http://diffs/*`: to check gh-arc's `/api/ping`. GitHub's page can't reach the server itself, so the check runs in the extension.
+- `storage`: to remember the off switches and the server address.
+
 ## Limits
 
 - GitHub accepts review comments only on lines inside a pull request's hunks, so lines from expanded context can't take comments.
@@ -84,7 +108,7 @@ The server acts with your GitHub credentials, so it only answers requests addres
 ```sh
 npm install
 npm test                  # unit and API tests against an in-memory GitHub
-npx playwright test       # the review page in Chromium, same fake GitHub
+npx playwright test       # the review page and the extension in Chromium, same fake GitHub
 ```
 
 `tests/support/fake-github.js` stands in for GitHub (`GH_ARC_API_URL`, `GH_ARC_TOKEN`, `GH_ARC_HOME` point gh-arc at it), so no test touches a real pull request.
