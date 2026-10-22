@@ -10,22 +10,31 @@
   <link rel="stylesheet" href="/assets/viewer.css">
 </head>
 <body class="home">
-  <header class="topbar">
-    <div class="titlebar">
-      <img class="app-icon" src="/assets/icon.svg" alt="">
-      <div class="titlebar-text">
+  <div class="home-app">
+    <aside class="home-sidebar">
+      <div class="home-brand">
+        <img class="app-icon" src="/assets/icon.svg" alt="">
         <h1>gh-arc</h1>
+      </div>
+      <div class="home-nav-heading">Inbox</div>
+      <nav id="home-nav" class="home-nav" aria-label="Inbox sections"></nav>
+      <div class="home-sidebar-foot">
         <div id="viewer-login" class="muted">Your pull requests and review queue</div>
       </div>
-    </div>
-    <form id="open-form" class="open-form" role="search">
-      <input id="open-input" type="text" placeholder="Open a PR: 11505, URL, owner/repo#123" aria-label="Pull request to open" autocomplete="off">
-      <button type="submit" class="primary-action">Open</button>
-    </form>
-  </header>
-  <main id="inbox" class="inbox">
-    <div class="empty">Loading your inbox…</div>
-  </main>
+    </aside>
+    <main class="home-main">
+      <form id="open-form" class="open-form" role="search">
+        <span data-icon="search" data-icon-size="18"></span>
+        <span id="filter-chips" class="filter-chips"></span>
+        <input id="open-input" type="text" placeholder="Open a PR: 11505, URL, owner/repo#123" aria-label="Pull request to open" autocomplete="off">
+        <button type="submit" class="primary-action">Open</button>
+      </form>
+      <div id="quick-filters" class="quick-filters" aria-label="Filter by repository"></div>
+      <div id="inbox" class="inbox">
+        <div class="empty">Loading your inbox…</div>
+      </div>
+    </main>
+  </div>
   <script src="/assets/routes.js"></script>
   <script src="/assets/common.js"></script>
   <script src="/assets/home.js"></script>
