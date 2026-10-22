@@ -18,6 +18,7 @@ let base;
 test.before(async () => {
   github = await fake.startFakeGitHub();
   process.env.GH_ARC_API_URL = github.url;
+  process.env.GH_ARC_WEB_URL = github.url;
   process.env.GH_ARC_TOKEN = 'test-token';
   process.env.GH_ARC_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'gh-arc-server-'));
   const { createServer } = require('../../lib/server');
@@ -164,6 +165,54 @@ test('threads come back positioned, with outdated ones flagged', async () => {
   assert.deepEqual([live.side, live.path, live.startLine, live.endLine, live.outdated], ['new', 'src/app.js', 10, 10, false]);
   assert.deepEqual([old.outdated, old.resolved, old.endLine], [true, true, 5]);
   assert.deepEqual(body.drafts.threads, []);
+});
+
+test('uploaded images in a description point at the local route', async () => {
+  const { body } = await get(`${base}/api/pr/octo/widgets/3/pr`);
+  assert.doesNotMatch(body.pr.bodyHTML, /private-user-images|user-attachments/);
+  assert.match(body.pr.bodyHTML, /href="\/api\/image\/11111111-1111-4111-8111-111111111111"><img src="\/api\/image\/11111111-1111-4111-8111-111111111111" width="420"/);
+  assert.match(body.pr.bodyHTML, /<img src="\/api\/image\/22222222-2222-4222-8222-222222222222"/);
+});
+
+test('the image route fetches an expired upload by its id, keeping the token off storage', async () => {
+  await get(`${base}/api/pr/octo/widgets/3/pr`);
+  const res = await fetch(`${base}/api/image/11111111-1111-4111-8111-111111111111`);
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('content-type'), 'image/png');
+  assert.match(res.headers.get('cache-control'), /immutable/);
+  assert.match(res.headers.get('content-security-policy'), /sandbox/);
+  assert.equal(res.headers.get('cross-origin-resource-policy'), 'same-origin');
+  assert.equal((await res.arrayBuffer()).byteLength > 0, true);
+  assert.deepEqual(github.state.calls.filter((call) => ['attachment', 'storage'].includes(call.name)), [
+    { name: 'attachment', input: '11111111-1111-4111-8111-111111111111' },
+    { name: 'storage', input: { id: '11111111-1111-4111-8111-111111111111', authorization: null } },
+  ]);
+  await fetch(`${base}/api/image/11111111-1111-4111-8111-111111111111`);
+  assert.equal(github.state.calls.filter((call) => call.name === 'attachment').length, 1);
+});
+
+test('the image route refuses non-images, other hosts and anything but an asset id', async () => {
+  const status = async (id) => (await fetch(`${base}/api/image/${id}`)).status;
+  assert.equal(await status('33333333-3333-4333-8333-333333333333'), 415);
+  assert.equal(await status('44444444-4444-4444-8444-444444444444'), 502);
+  assert.equal(await status('55555555-5555-4555-8555-555555555555'), 404);
+  assert.equal(await status('..%2F..%2Fapi%2Fping'), 404);
+});
+
+test('image files in the diff come from the merge base and the head', async () => {
+  const image = (query) => fetch(`${base}/api/pr/octo/widgets/3/image?${new URLSearchParams(query)}`);
+  const before = await image({ path: 'assets/logo.png', base: fake.BASE_OID, head: fake.PR3_HEAD });
+  const after = await image({ path: 'assets/logo.png', ref: fake.PR3_HEAD });
+  assert.equal(before.status, 200);
+  assert.equal(after.headers.get('content-type'), 'image/png');
+  assert.notDeepEqual(Buffer.from(await before.arrayBuffer()), Buffer.from(await after.arrayBuffer()));
+  const svg = await image({ path: 'assets/icon.svg', ref: fake.BASE_OID });
+  assert.equal(svg.headers.get('content-type'), 'image/svg+xml');
+  assert.match(svg.headers.get('content-security-policy'), /sandbox/);
+  assert.equal((await image({ path: 'assets/notes.png', ref: fake.PR3_HEAD })).status, 415);
+  assert.equal((await image({ path: 'assets/gone.png', ref: fake.PR3_HEAD })).status, 404);
+  assert.equal((await image({ path: '../secrets.png', ref: fake.PR3_HEAD })).status, 400);
+  assert.equal((await image({ path: 'assets/logo.png', ref: 'main' })).status, 400);
 });
 
 test('stack finds the parent and child through branch names', async () => {

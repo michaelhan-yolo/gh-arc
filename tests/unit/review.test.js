@@ -35,16 +35,26 @@ const PATCH = [
   'similarity index 100%',
   'rename from old name.png',
   'rename to new name.png',
+  'diff --git a/logo.png b/logo.png',
+  'new file mode 100644',
+  'index 0000000..1234567',
+  'Binary files /dev/null and b/logo.png differ',
+  'diff --git a/old.gif b/old.gif',
+  'deleted file mode 100644',
+  'index 1234567..0000000',
+  'Binary files a/old.gif and /dev/null differ',
   '',
 ].join('\n');
 
-test('parsePatchFiles reads renames, deletions, spaces and git-quoted paths', () => {
+test('parsePatchFiles reads renames, deletions, spaces, git-quoted paths and added binaries', () => {
   assert.deepEqual(parsePatchFiles(PATCH), [
     { oldPath: 'docs/old.md', newPath: 'docs/new.md' },
     { oldPath: 'gone.js', newPath: null },
     { oldPath: 'café "menu".js', newPath: 'café "menu".js' },
     { oldPath: null, newPath: 'with space.js' },
     { oldPath: 'old name.png', newPath: 'new name.png' },
+    { oldPath: null, newPath: 'logo.png' },
+    { oldPath: 'old.gif', newPath: null },
   ]);
 });
 
@@ -76,7 +86,7 @@ test('patchFromFiles rebuilds a parseable diff from the files API', () => {
   assert.deepEqual(parsePatchFiles(text).map((file) => [file.oldPath, file.newPath]), [
     ['a.js', 'a.js'],
     ['old.js', 'new.js'],
-    ['logo.png', 'logo.png'],
+    [null, 'logo.png'],
   ]);
   assert.match(text, /@@ -1 \+1 @@\n-a\n\+b\n/);
 });

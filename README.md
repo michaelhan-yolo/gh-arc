@@ -42,6 +42,7 @@ Pages live at `http://localhost:7799/diffs/11505` for the repository you run `gh
 - **Existing threads inline**, with resolve, unresolve and reply. Resolved threads start collapsed; outdated ones sit under the details with the hunk they were left on.
 - **Review status and Ship it**: the top bar says where a pull request stands: yellow *Under review*, red *Changes requested*, and once accepted, a green **Ship it**. Shipping a pull request higher in a stack lands the whole stack below it in one go, bottom first: each one merges into the trunk and the next moves onto the trunk before it merges, with every one required to be accepted, and the pull requests above move onto the trunk afterwards. The server moves a pull request onto the trunk only after the one below it has merged, so nothing unreviewed rides along. The sidebar, stack menu and inbox show the same status on every pull request.
 - **Phabricator-style review**: inline comments and replies stay drafts (saved in `~/.gh-arc/drafts`, so they survive a reload) until you submit them in one review as Comment, Accept or Request changes. A pending review you started on github.com goes out with it.
+- **Image files** (PNG, JPEG, GIF, WebP, SVG, ICO) show as pictures, before and after: side by side, a swipe between the two, or a flip. An added or deleted image shows its one side, and an SVG keeps its text diff below.
 - **Viewed files** sync with GitHub's checkbox and collapse. Lock files, generated files and diffs over 1,500 lines start collapsed.
 - **Narrower views**: one commit, or everything since your last review. You can comment on the right side when it's the head commit; other views are read-only.
 - **Details**: author, branches, reviewers, checks, labels, the description and the conversation, rendered by GitHub. Links to other pull requests open here.
@@ -59,6 +60,8 @@ GitHub keeps no log of pushes, but CI checks run only on the commit at the tip o
 On your own pull requests there is nothing to accept or block: the Review button goes away and the panel posts your replies as comments.
 
 Submitting a review gets or creates your pending review on GitHub, adds each draft as a thread or reply, and then submits it with the action you chose. If GitHub rejects a draft (a line outside the diff, say), the draft stays local with the error, the rest wait in the pending review, and nothing is submitted until you resubmit.
+
+Images uploaded to a private repository's descriptions and comments come back from GitHub as links signed for five minutes, so a page left open would lose them. The server points them at `/api/image/<id>` instead and fetches each one itself: from the signed link while it lasts, and after that from `github.com/user-attachments` with your token, following redirects only to GitHub's own hosts and never sending the token to its storage. It serves a file only if its bytes are an image, and the browser keeps it, since an asset id never changes.
 
 The server acts with your GitHub credentials, so it only answers requests addressed to `127.0.0.1` or `localhost`. Writes also need a token that is minted per server and embedded in the page, and the page runs under a CSP that allows only its own scripts.
 

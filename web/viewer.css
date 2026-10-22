@@ -1774,6 +1774,13 @@ a.stack-title:hover {
   height: auto;
 }
 
+/* Screenshot tables size images on purpose (width="420"), so the table scrolls instead of
+   shrinking them. GitHub's inline max-width would win without !important. */
+.markdown-body td img[width],
+.markdown-body th img[width] {
+  max-width: none !important;
+}
+
 .markdown-body hr {
   height: 1px;
   margin: 16px 0;
@@ -2352,6 +2359,121 @@ a.stack-title:hover {
   color: var(--muted);
   font-family: var(--code);
   font-size: 12px;
+}
+
+/* ------------------------------------------------------------ image files */
+
+.image-diff {
+  padding: 12px;
+}
+
+.image-diff + * {
+  border-top: 1px solid var(--border-soft);
+}
+
+.image-diff-modes {
+  margin-bottom: 10px;
+}
+
+.image-diff-stage {
+  display: grid;
+  grid-auto-columns: minmax(0, 1fr);
+  grid-auto-flow: column;
+  gap: 12px;
+}
+
+.image-side {
+  display: flex;
+  min-width: 0;
+  margin: 0;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* A checkerboard behind the image shows where it is transparent. */
+.image-frame {
+  display: flex;
+  min-height: 72px;
+  padding: 8px;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background-color: var(--panel);
+  background-image: conic-gradient(var(--line) 25%, transparent 0 50%, var(--line) 0 75%, transparent 0);
+  background-size: 16px 16px;
+}
+
+.image-side.image-old .image-frame {
+  border-color: var(--old-strong);
+}
+
+.image-side.image-new .image-frame {
+  border-color: var(--new-strong);
+}
+
+.image-frame img {
+  display: block;
+  max-width: 100%;
+  max-height: 560px;
+  height: auto;
+}
+
+.image-side figcaption {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.image-missing {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* Swipe and Flip stack the two sides in one cell, After on top, sized to the image. */
+.image-diff[data-mode="swipe"] .image-diff-stage,
+.image-diff[data-mode="flip"] .image-diff-stage {
+  grid-template-columns: minmax(min(100%, 260px), max-content);
+  justify-content: center;
+}
+
+.image-diff[data-mode="swipe"] .image-side,
+.image-diff[data-mode="flip"] .image-side {
+  grid-area: 1 / 1;
+}
+
+.image-diff[data-mode="swipe"] .image-side.image-new .image-frame {
+  position: relative;
+  clip-path: inset(0 0 0 var(--swipe));
+}
+
+.image-diff[data-mode="swipe"] .image-side.image-new .image-frame::after {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--swipe);
+  width: 2px;
+  background: var(--accent);
+  content: "";
+}
+
+.image-diff[data-mode="swipe"] .image-side.image-new figcaption {
+  text-align: right;
+}
+
+.image-diff[data-mode="flip"] .image-diff-stage {
+  cursor: pointer;
+}
+
+.image-diff[data-mode="flip"]:not([data-flipped]) .image-side.image-old,
+.image-diff[data-mode="flip"][data-flipped] .image-side.image-new {
+  visibility: hidden;
+}
+
+.image-swipe {
+  width: 100%;
+  margin: 0;
+  grid-area: 2 / 1;
 }
 
 /* ------------------------------------------------------------ inline comments */
