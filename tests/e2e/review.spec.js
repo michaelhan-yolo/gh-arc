@@ -94,6 +94,63 @@ test('reviews a stacked pull request: drafts, a range, a reply, then one submitt
   expect(inputs[4]).toMatchObject({ event: 'REQUEST_CHANGES', body: 'Please fix.' });
 });
 
+test('an open review survives a server restart and submits exactly once', async ({ page }) => {
+  await page.goto(`${base}/diffs/2`);
+  const source = page.locator('article.file', { hasText: 'src/app.js' });
+  await source.locator('[data-line-handle][data-side="new"][data-line="21"]').click();
+  await page.locator('[data-comment-text]').fill('Keep this inline draft.');
+  await page.locator('[data-comment-submit]').click();
+  await expect(source.locator('.inline-comment.draft')).toContainText('Keep this inline draft.');
+
+  const oldToken = app.sessionToken;
+  const port = app.port;
+  await app.close();
+  app = require('../../lib/server').createServer({ homeRepo: 'octo/widgets' });
+  await app.listen(port, '127.0.0.1', true);
+  expect(app.sessionToken).not.toBe(oldToken);
+
+  const requests = [];
+  page.on('request', (request) => {
+    if (request.url().endsWith('/submit')) requests.push(request);
+  });
+  // Submit before the debounced draft save, so the submission itself has the old token.
+  await page.locator('[data-review-body]').evaluate((textarea) => {
+    window.restartMarker = true;
+    textarea.value = 'Keep this unsaved review summary.';
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    document.querySelector('[data-review-submit]').click();
+  });
+  await expect(page.locator('#toast')).toContainText('Review submitted');
+  await expect(page.locator('.draft-summary')).toHaveCount(0);
+  expect(await page.evaluate(() => window.restartMarker)).toBe(true);
+  expect(requests.map((request) => request.headers()['x-gh-arc-token'])).toEqual([oldToken, app.sessionToken]);
+  expect(requests.map((request) => request.postDataJSON().body))
+    .toEqual(['Keep this unsaved review summary.', 'Keep this unsaved review summary.']);
+  expect(callNames()).toEqual(['addPullRequestReview', 'addPullRequestReviewThread', 'submitPullRequestReview']);
+  expect(github.state.calls[1].input.body).toBe('Keep this inline draft.');
+  expect(github.state.calls[2].input.body).toBe('Keep this unsaved review summary.');
+  expect(await page.locator('meta[name="gh-arc-token"]').getAttribute('content')).toBe(app.sessionToken);
+});
+
+for (const refreshToken of [false, true]) {
+  test(`review errors ${refreshToken ? 'stop after one token refresh' : 'do not retry ordinary permission failures'}`, async ({ page }) => {
+    let requests = 0;
+    await page.route('**/api/pr/octo/widgets/2/submit', async (route) => {
+      requests++;
+      await route.fulfill({ status: 403, contentType: 'application/json',
+        headers: refreshToken ? { 'X-GH-Arc-Token': 'replacement-token' } : {},
+        body: JSON.stringify({ error: 'Review rejected' }) });
+    });
+    await page.goto(`${base}/diffs/2`);
+    await page.locator('[data-review-body]').fill('Keep my summary.');
+    await page.locator('[data-review-submit]').click();
+    await expect(page.locator('.review-error')).toHaveText('Review rejected');
+    await expect(page.locator('[data-review-body]')).toHaveValue('Keep my summary.');
+    expect(requests).toBe(refreshToken ? 2 : 1);
+    expect(callNames()).toEqual([]);
+  });
+}
+
 test('drafts survive a reload, and a rejected one shows its error', async ({ page }) => {
   await page.goto(`${base}/diffs/2`);
   const source = page.locator('article.file', { hasText: 'src/app.js' });
@@ -320,6 +377,47 @@ test('the layout buttons switch between side by side and unified', async ({ page
   await expect(page.locator('#mode-split')).toHaveClass(/active/);
 });
 
+test('a chosen theme overrides the system and persists across reloads, pages and tabs', async ({ page, context }) => {
+  await page.emulateMedia({ colorScheme: 'light' });
+  await page.goto(`${base}/diffs/2`);
+  const theme = page.getByRole('combobox', { name: 'Color theme' });
+  await theme.selectOption('dark');
+  await expect(page.locator('body')).toHaveCSS('background-color', 'rgb(24, 25, 27)');
+  await expect(page.locator('html')).toHaveCSS('color-scheme', 'dark');
+
+  await page.reload();
+  await expect(theme).toHaveValue('dark');
+  await expect(page.locator('body')).toHaveCSS('background-color', 'rgb(24, 25, 27)');
+
+  const inbox = await context.newPage();
+  await inbox.goto(base);
+  const inboxTheme = inbox.getByRole('combobox', { name: 'Color theme' });
+  await expect(inboxTheme).toHaveValue('dark');
+  await expect(inbox.locator('body')).toHaveCSS('background-color', 'rgb(24, 25, 27)');
+  await inbox.emulateMedia({ colorScheme: 'dark' });
+  await inboxTheme.selectOption('light');
+  await expect(inbox.locator('body')).toHaveCSS('background-color', 'rgb(255, 255, 255)');
+  await expect(theme).toHaveValue('light');
+  await expect(page.locator('body')).toHaveCSS('background-color', 'rgb(255, 255, 255)');
+});
+
+test('System theme follows appearance changes and can be restored after an override', async ({ page }) => {
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await page.goto(`${base}/diffs/2`);
+  const theme = page.getByRole('combobox', { name: 'Color theme' });
+  await expect(theme).toHaveValue('system');
+  await expect(page.locator('body')).toHaveCSS('background-color', 'rgb(24, 25, 27)');
+  await page.emulateMedia({ colorScheme: 'light' });
+  await expect(page.locator('body')).toHaveCSS('background-color', 'rgb(255, 255, 255)');
+
+  await theme.selectOption('dark');
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await page.emulateMedia({ colorScheme: 'light' });
+  await expect(page.locator('body')).toHaveCSS('background-color', 'rgb(24, 25, 27)');
+  await theme.selectOption('system');
+  await expect(page.locator('body')).toHaveCSS('background-color', 'rgb(255, 255, 255)');
+});
+
 test('both pages carry the app icon, and the one on a pull request leads to the inbox', async ({ page }) => {
   const icon = await page.request.get(`${base}/assets/icon.svg`);
   expect(icon.headers()['content-type']).toBe('image/svg+xml');
@@ -509,6 +607,31 @@ test('ship it waits on every pull request below, and stops at the first failure'
   expect(shipCalls()).toEqual(['mergePullRequest PR_1', 'updatePullRequest PR_2', 'mergePullRequest PR_2']);
 });
 
+test('a pull request can retry failed loads without reloading the page', async ({ page }) => {
+  let requests = 0;
+  await page.route('**/api/pr/octo/widgets/2/pr', async (route) => {
+    requests++;
+    if (requests <= 2) {
+      await route.fulfill({ status: 502, contentType: 'application/json',
+        body: JSON.stringify({ error: 'GitHub is temporarily unavailable (HTTP 502). Try again in a moment.' }) });
+    } else {
+      await route.continue();
+    }
+  });
+  await page.goto(`${base}/diffs/2`);
+  await expect(page.locator('[data-region="pr"]')).toContainText('GitHub is temporarily unavailable (HTTP 502)');
+  await page.evaluate(() => { window.retryMarker = true; });
+  await page.locator('[data-region-retry="pr"]').click();
+  await expect(page.locator('[data-region-retry="pr"]')).toBeEnabled();
+  await expect(page.locator('[data-region="pr"]')).toContainText('GitHub is temporarily unavailable');
+  await page.locator('[data-region-retry="pr"]').click();
+  await expect(page.locator('.pr-title')).toHaveText('Render widgets');
+  await expect(page.locator('[data-region="pr"]')).toHaveCount(0);
+  await expect(page.locator('article.file', { hasText: 'src/app.js' })).toBeVisible();
+  expect(await page.evaluate(() => window.retryMarker)).toBe(true);
+  expect(requests).toBe(3);
+});
+
 test('the inbox can retry a failed load without reloading the page', async ({ page }) => {
   let requests = 0;
   await page.route('**/api/inbox', async (route) => {
@@ -543,7 +666,7 @@ test('the inbox draws each stack top first over its trunk', async ({ page }) => 
 test('the inbox sidebar and the repository chips narrow what it lists', async ({ page }) => {
   await page.goto(`${base}/`);
   const nav = page.locator('#home-nav .home-nav-item');
-  await expect(nav).toHaveText(['All pull requests', /Needs your review\s*3/, /Your pull requests\s*3/, /Reviewed by you\s*1/]);
+  await expect(nav).toHaveText(['All pull requests', /Needs your review\s*3/, /Your pull requests\s*3/, /Reviewed by you\s*1/, 'Landed diffs']);
   await nav.filter({ hasText: 'Your pull requests' }).click();
   await expect(page).toHaveURL(`${base}/#mine`);
   await expect(page.locator('.inbox-section')).toHaveCount(1);
@@ -551,13 +674,41 @@ test('the inbox sidebar and the repository chips narrow what it lists', async ({
   await page.locator('.quick-filter', { hasText: 'octo/widgets' }).click();
   await expect(page.locator('#filter-chips .filter-chip')).toHaveCount(2);
   await page.locator('.quick-filter-clear').click();
-  await expect(page.locator('.inbox-section')).toHaveCount(3);
+  await expect(page.locator('.inbox-section')).toHaveCount(4);
   await expect(page.locator('#filter-chips .filter-chip')).toHaveCount(0);
 
   await page.goto(`${base}/diffs/2`);
   await page.locator('.rail-link[title="Reviewed by you"]').click();
   await expect(page).toHaveURL(`${base}/#reviewed`);
   await expect(page.locator('.inbox-section')).toHaveText(/Reviewed by you/);
+});
+
+test('landed diffs lists only your merges, newest first, and opens from the left rail', async ({ page }) => {
+  Object.assign(github.state.prs[1], { author: 'me', merged: true, mergedAt: '2026-10-01T10:00:00Z' });
+  Object.assign(github.state.prs[2], { author: 'me', merged: true, mergedAt: '2026-10-03T10:00:00Z' });
+  Object.assign(github.state.prs[3], { author: 'alice', merged: true });
+  Object.assign(github.state.prs[30], { closed: true });
+  await page.goto(`${base}/diffs/2`);
+  await page.getByRole('link', { name: 'Landed diffs', exact: true }).click();
+  await expect(page).toHaveURL(`${base}/#landed`);
+  await expect(page.locator('.inbox-section')).toHaveCount(1);
+  await expect(page.locator('#home-nav .home-nav-item.active')).toHaveText(/Landed diffs\s*2/);
+  await expect(page.locator('.inbox-number')).toHaveText(['#2', '#1']);
+  await expect(page.locator('.inbox-badges')).toHaveText(['Merged', 'Merged']);
+  await expect(page.locator('.inbox-group.is-stack')).toHaveCount(0);
+  await page.locator('.quick-filter', { hasText: 'octo/widgets' }).click();
+  await expect(page.locator('.inbox-number')).toHaveText(['#2', '#1']);
+  await page.reload();
+  await expect(page.locator('.inbox-number')).toHaveText(['#2', '#1']);
+  await page.locator('.inbox-row', { hasText: 'Render widgets' }).click();
+  await expect(page).toHaveURL(`${base}/diffs/2`);
+  await expect(page.locator('.pr-title')).toHaveText('Render widgets');
+});
+
+test('landed diffs keeps an empty section accessible', async ({ page }) => {
+  await page.goto(`${base}/#landed`);
+  await expect(page.locator('#home-nav .home-nav-item.active')).toHaveText('Landed diffs');
+  await expect(page.locator('.inbox-empty')).toHaveText('Nothing here.');
 });
 
 test('uploaded images in the description load from gh-arc after their signed links expire', async ({ page }) => {
@@ -576,15 +727,38 @@ test('uploaded images in the description load from gh-arc after their signed lin
   await expect(page.locator('.diff-description a').first()).toHaveAttribute('href', '/api/image/11111111-1111-4111-8111-111111111111');
 });
 
+test('private repository screenshots load in the description and review comments', async ({ page }) => {
+  const source = `https://github.com/octo/widgets/blob/${fake.PR3_HEAD}/assets/logo.png?raw=true`;
+  const html = `<a href="${source}"><img src="${source}" width="360" alt="Before report modal"></a>`;
+  github.state.bodyHTML = `<table><tr><td>${html}</td></tr></table>`;
+  github.state.threads[0].comments.nodes[0].bodyHTML = html;
+  // No signed-in GitHub browser session is available to retrieve these private files.
+  await page.route('https://github.com/**', route => route.abort());
+  await page.goto(`${base}/diffs/2`);
+  await page.locator('#file-list .file-link', { hasText: 'app.js' }).click();
+  const images = page.locator('.diff-description img, .inline-comment img[alt="Before report modal"]');
+  await expect(images).toHaveCount(2);
+  await expect.poll(() => images.evaluateAll(nodes => nodes.map(node => node.naturalWidth))).toEqual([160, 160]);
+  await expect(page.locator('.diff-description img')).toHaveAttribute('width', '360');
+  const href = await page.locator('.diff-description a').getAttribute('href');
+  expect(href).toBe(`/api/repo/octo/widgets/image?ref=${fake.PR3_HEAD}&path=assets%2Flogo.png`);
+  const opened = await page.request.get(`${base}${href}`);
+  expect(opened.status()).toBe(200);
+  expect(opened.headers()['content-type']).toBe('image/png');
+});
+
 test('image files show before and after, with swipe and flip', async ({ page }) => {
   await page.goto(`${base}/diffs/3`);
   const logo = page.locator('article.file', { hasText: 'assets/logo.png' });
+  await page.locator('#file-list .file-link', { hasText: 'logo.png' }).click();
   await expect(logo.locator('.image-side figcaption')).toHaveText(['Before · 160 × 100', 'After · 160 × 100']);
   await expect(logo).not.toContainText('Binary files');
   const badge = page.locator('article.file', { hasText: 'assets/badge.png' });
+  await page.locator('#file-list .file-link', { hasText: 'badge.png' }).click();
   await expect(badge.locator('.image-side figcaption')).toHaveText(['Added · 80 × 80']);
   await expect(badge.locator('[data-image-mode]')).toHaveCount(0);
   const icon = page.locator('article.file', { hasText: 'assets/icon.svg' });
+  await page.locator('#file-list .file-link', { hasText: 'icon.svg' }).click();
   await expect(icon.locator('.image-side figcaption')).toHaveText(['Deleted · 64 × 64']);
   await expect(icon.locator('.code-table, table').first()).toContainText('<rect');
 
@@ -599,6 +773,7 @@ test('image files show before and after, with swipe and flip', async ({ page }) 
   await expect(logo.locator('.image-old')).toBeVisible();
   await expect(logo.locator('.image-new')).toBeHidden();
   await page.reload();
+  await page.locator('#file-list .file-link', { hasText: 'logo.png' }).click();
   await expect(logo.locator('.image-diff')).toHaveAttribute('data-mode', 'flip');
 });
 
@@ -615,4 +790,156 @@ test.describe('under the diffs host', () => {
     await page.locator('body').press(']');
     await expect(page).toHaveURL(`http://diffs:${port}/3`);
   });
+});
+
+test('diff renders while details and comments wait, and late responses cannot replace another PR', async ({ page }) => {
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  await page.route(/\/api\/pr\/octo\/widgets\/2\/(pr|threads)$/, async (route) => {
+    await held;
+    await route.continue();
+  });
+  try {
+    await page.goto(`${base}/diffs/2`);
+    await expect(page.locator('.diff-table').first()).toBeVisible();
+    await expect(page.locator('[data-region="pr"]')).toContainText('Loading');
+    await expect(page.locator('[data-region="threads"]')).toContainText('Loading');
+    await expect(page.locator('[data-viewed]').first()).toBeDisabled();
+    await expect(page.locator('[data-line-handle]')).toHaveCount(0);
+    await page.evaluate(() => {
+      history.pushState(null, '', '/diffs/3');
+      dispatchEvent(new PopStateEvent('popstate'));
+    });
+    await expect(page.locator('.pr-title')).toHaveText('Animate widgets');
+    release();
+    await expect(page.locator('.pr-title')).toHaveText('Animate widgets');
+    await expect(page.locator('[data-region]')).toHaveCount(0);
+    expect(errors).toEqual([]);
+  } finally { release(); }
+});
+
+test('comments can fail and retry without losing a usable diff', async ({ page }) => {
+  let failed = true;
+  await page.route('**/api/pr/octo/widgets/2/threads', async (route) => {
+    if (failed) await route.fulfill({ status: 502, json: { error: 'Comments unavailable' } });
+    else await route.continue();
+  });
+  await page.goto(`${base}/diffs/2`);
+  await expect(page.locator('.diff-table').first()).toBeVisible();
+  await expect(page.locator('[data-region="threads"]')).toContainText('Comments unavailable');
+  await expect(page.locator('#review-jump')).toBeDisabled();
+  failed = false;
+  await page.locator('[data-region-retry="threads"]').click();
+  await expect(page.locator('[data-comment-id="T_live"]')).toContainText('Why 100?');
+  await expect(page.locator('#review-jump')).toBeEnabled();
+});
+
+test('large diffs defer distant files and thread jumps render the destination', async ({ page }) => {
+  const lines = Array.from({ length: 30 }, (_, i) => `+const value${i} = ${i};`).join('\n');
+  const patch = Array.from({ length: 150 }, (_, i) => {
+    const path = `src/file-${String(i).padStart(3, '0')}.js`;
+    return `diff --git a/${path} b/${path}\nnew file mode 100644\n--- /dev/null\n+++ b/${path}\n@@ -0,0 +1,30 @@\n${lines}\n`;
+  }).join('');
+  github.state.threads[0].path = 'src/file-149.js';
+  await page.route('**/api/pr/octo/widgets/2/patch', (route) => route.fulfill({ json: { patch, oldRef: fake.BASE_OID, newRef: fake.HEAD_OID } }));
+  const start = Date.now();
+  await page.goto(`${base}/diffs/2`);
+  await expect(page.locator('article.file')).toHaveCount(150);
+  await expect(page.locator('.diff-table').first()).toBeVisible();
+  const count = await page.locator('.diff-table').count();
+  expect(count).toBeLessThan(15);
+  console.log(`150 files / 4,500 lines: first table in ${Date.now() - start}ms; ${count} tables rendered`);
+  await page.locator('#comments-panel-toggle').click();
+  await page.locator('#comment-status').selectOption('unresolved');
+  await page.locator('[data-thread-jump="T_live"]').click();
+  const last = page.locator('#file-149');
+  await expect(last.locator('.diff-table')).toBeVisible();
+  await expect(last.locator('[data-comment-id="T_live"]')).toBeInViewport();
+  await expect(last.locator('.hljs-keyword').first()).toHaveText('const');
+  await last.locator('[data-line-handle][data-line="10"]').click();
+  await page.locator('[data-comment-text]').fill('Draft survives a panel filter');
+  await page.locator('#comment-search').fill('Why');
+  await expect(page.locator('[data-comment-text]')).toHaveValue('Draft survives a panel filter');
+});
+
+test('comments panel filters authors, status, text, and opens outdated threads', async ({ page }) => {
+  await page.goto(`${base}/diffs/2`);
+  await expect(page.locator('#review-jump')).toBeEnabled();
+  await page.keyboard.press('c');
+  await expect(page.getByRole('complementary', { name: 'Review threads' })).toBeVisible();
+  await page.locator('#comment-author').selectOption('alice');
+  await page.locator('#comment-status').selectOption('unresolved');
+  await expect(page.locator('.thread-preview')).toHaveCount(1);
+  await page.locator('#comment-search').fill('missing text');
+  await expect(page.locator('.thread-preview')).toHaveCount(0);
+  await page.locator('#comment-search').fill('');
+  await page.locator('#comment-author').selectOption('');
+  await page.locator('#comment-status').selectOption('resolved');
+  await page.locator('[data-thread-jump="T_old"]').click();
+  await expect(page.locator('.outdated-details')).toHaveAttribute('open', '');
+  await expect(page.locator('[data-comment-id="T_old"]')).toBeInViewport();
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#comments-panel')).toBeHidden();
+});
+
+test('syntax highlighting preserves code, multiline tokens, intraline marks, and both themes', async ({ page }) => {
+  await page.goto(`${base}/diffs/2`);
+  const source = page.locator('article.file', { hasText: 'src/app.js' });
+  await expect(source.locator('.hljs-keyword').first()).toHaveText('const');
+  const changed = source.locator('td.code[data-side="new"][data-line="10"]');
+  await expect(changed).toHaveText('const v10 = 100;');
+  await expect(changed.locator('.mark')).toHaveText('0');
+  const sample = await page.evaluate(() => {
+    const input = ['/* beginning', 'still a comment */', 'const text = "<img src=x onerror=alert(1)>";'];
+    const html = window.PhabricadeSyntax.lines(input, 'index.js');
+    return html.map((line) => {
+      const node = document.createElement('div'); node.innerHTML = line;
+      return { text: node.textContent, comment: Boolean(node.querySelector('.hljs-comment')), images: node.querySelectorAll('img').length };
+    });
+  });
+  expect(sample).toEqual([
+    { text: '/* beginning', comment: true, images: 0 },
+    { text: 'still a comment */', comment: true, images: 0 },
+    { text: 'const text = "<img src=x onerror=alert(1)>";', comment: false, images: 0 },
+  ]);
+  await page.locator('#mode-unified').click();
+  await expect(source.locator('td.code[data-new-line="10"]')).toHaveText('+const v10 = 100;');
+  const keyword = source.locator('.hljs-keyword').first();
+  const light = await keyword.evaluate((node) => getComputedStyle(node).color);
+  await page.getByRole('combobox', { name: 'Color theme' }).selectOption('dark');
+  expect(await keyword.evaluate((node) => getComputedStyle(node).color)).not.toBe(light);
+  await expect(page).toHaveTitle(/Phabricade/);
+});
+
+test('stack neighbors prefetch, and inbox link intent prefetches without navigating', async ({ page }) => {
+  const requests = [];
+  page.on('request', (request) => { if (request.url().endsWith('/prefetch')) requests.push(request.url()); });
+  await page.goto(`${base}/diffs/2`);
+  await expect.poll(() => requests.length).toBe(2);
+  expect(requests.map((url) => new URL(url).pathname).sort()).toEqual(['/api/pr/octo/widgets/1/prefetch', '/api/pr/octo/widgets/3/prefetch']);
+  await page.goto(`${base}/`);
+  await page.locator('a[href="/diffs/2"]').first().hover();
+  await expect.poll(() => requests.some((url) => url.endsWith('/2/prefetch'))).toBe(true);
+  await expect(page).toHaveURL(`${base}/`);
+  expect(github.state.calls).toEqual([]);
+});
+
+test('draft replies appear in the thread browser and narrow-screen jumps close the panel', async ({ page }) => {
+  await page.goto(`${base}/diffs/2`);
+  await page.locator('[data-comment-reply="T_live"]').click();
+  await page.locator('[data-reply-text]').fill('Keep this local reply');
+  await page.locator('[data-reply-submit]').click();
+  await page.locator('#comments-panel-toggle').click();
+  await page.locator('#comment-status').selectOption('draft');
+  await expect(page.locator('.thread-preview')).toHaveCount(1);
+  await expect(page.locator('.thread-preview')).toContainText('Keep this local reply');
+  await page.locator('#comment-author').selectOption('me');
+  await expect(page.locator('.thread-preview')).toHaveCount(1);
+  await page.setViewportSize({ width: 900, height: 900 });
+  await page.locator('[data-thread-jump="T_live"]').click();
+  await expect(page.locator('#comments-panel')).toBeHidden();
+  await expect(page.locator('[data-comment-id="T_live"]')).toBeInViewport();
+  expect(github.state.calls).toEqual([]);
 });

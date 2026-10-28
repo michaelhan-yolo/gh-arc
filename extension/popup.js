@@ -26,7 +26,7 @@
     if (found && found.base) {
       window.close();
     } else {
-      say(`gh-arc isn't running at ${settings.server}. Start it with gh arc serve.`);
+      say(`Phabricade isn't running at ${settings.server}. Start it with gh arc serve.`);
     }
   });
   $('server-form').addEventListener('submit', async (event) => {

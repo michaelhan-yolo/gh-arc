@@ -5,8 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="gh-arc-token" content="__GH_ARC_TOKEN__">
   <meta name="gh-arc-home-repo" content="__GH_ARC_HOME_REPO__">
-  <title>gh-arc inbox</title>
+  <title>Phabricade inbox</title>
   <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
+  <script src="/assets/theme.js"></script>
   <link rel="stylesheet" href="/assets/viewer.css">
 </head>
 <body class="home">
@@ -14,11 +15,18 @@
     <aside class="home-sidebar">
       <div class="home-brand">
         <img class="app-icon" src="/assets/icon.svg" alt="">
-        <h1>gh-arc</h1>
+        <h1>Phabricade</h1>
       </div>
       <div class="home-nav-heading">Inbox</div>
       <nav id="home-nav" class="home-nav" aria-label="Inbox sections"></nav>
       <div class="home-sidebar-foot">
+        <label class="home-theme">Theme
+          <select class="theme-select" data-theme-select aria-label="Color theme">
+            <option value="system">System</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </label>
         <div id="viewer-login" class="muted">Your pull requests and review queue</div>
       </div>
     </aside>
@@ -37,6 +45,7 @@
   </div>
   <script src="/assets/routes.js"></script>
   <script src="/assets/common.js"></script>
+  <script src="/assets/prefetch.js"></script>
   <script src="/assets/home.js"></script>
 </body>
 </html>

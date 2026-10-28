@@ -2,30 +2,30 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>gh-arc</title>
+  <title>Phabricade</title>
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
   <header>
     <img src="icons/icon-32.png" width="20" height="20" alt="">
-    <h1>gh-arc</h1>
+    <h1>Phabricade</h1>
     <span id="status" class="status"></span>
   </header>
   <label class="row">
     <input type="checkbox" id="enabled">
-    <span>Open GitHub pull requests in gh-arc</span>
+    <span>Open GitHub pull requests in Phabricade</span>
   </label>
   <section id="pull" hidden>
     <label class="row">
       <input type="checkbox" id="repo-enabled">
       <span>…in <b id="repo-name"></b></span>
     </label>
-    <button type="button" id="open">Open <span id="pull-name"></span> in gh-arc</button>
+    <button type="button" id="open">Open <span id="pull-name"></span> in Phabricade</button>
   </section>
   <details>
     <summary>Server</summary>
     <form id="server-form">
-      <input id="server" type="url" spellcheck="false" aria-label="gh-arc server">
+      <input id="server" type="url" spellcheck="false" aria-label="Phabricade server">
       <button type="submit">Save</button>
     </form>
     <p class="hint">localhost, 127.0.0.1 or diffs, with a port if it isn't 80.</p>

@@ -5,19 +5,21 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="gh-arc-token" content="__GH_ARC_TOKEN__">
   <meta name="gh-arc-home-repo" content="__GH_ARC_HOME_REPO__">
-  <title>gh-arc</title>
+  <title>Phabricade</title>
   <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
+  <script src="/assets/theme.js"></script>
   <link rel="stylesheet" href="/assets/viewer.css">
 </head>
 <body class="pr-page">
   <div id="app" class="app">
-    <nav class="rail" aria-label="gh-arc">
+    <nav class="rail" aria-label="Phabricade">
       <a class="home-link" href="/" aria-label="Open your inbox" title="Inbox">
         <img class="app-icon" src="/assets/icon.svg" alt="">
       </a>
       <a class="rail-link" href="/#needsReview" title="Needs your review" aria-label="Needs your review" data-icon="inbox" data-icon-size="20"></a>
       <a class="rail-link" href="/#mine" title="Your pull requests" aria-label="Your pull requests" data-icon="user" data-icon-size="20"></a>
       <a class="rail-link" href="/#reviewed" title="Reviewed by you" aria-label="Reviewed by you" data-icon="eye" data-icon-size="20"></a>
+      <a class="rail-link" href="/#landed" title="Landed diffs" aria-label="Landed diffs" data-icon="check-circle" data-icon-size="20"></a>
     </nav>
     <aside class="sidebar">
       <nav id="sidebar-stack" class="sidebar-stack" aria-label="Your stacks"></nav>
@@ -37,15 +39,21 @@
         <div class="titlebar">
           <span id="pr-avatar" class="pr-avatar"></span>
           <h1 id="pr-heading">Loading…</h1>
-          <div class="toolbar" role="toolbar" aria-label="Diff controls">
-            <div class="segmented" role="group" aria-label="Diff layout">
-              <button type="button" id="mode-split" class="seg active"><span data-icon="columns"></span>Side by side</button>
-              <button type="button" id="mode-unified" class="seg"><span data-icon="rows"></span>Unified</button>
-            </div>
-            <button type="button" id="comments-toggle" class="pill-toggle" aria-pressed="true">Comments</button>
-            <a id="github-open" class="icon-button" target="_blank" rel="noreferrer noopener" title="Open on GitHub" aria-label="Open on GitHub" data-icon="external" hidden></a>
-            <button type="button" id="review-jump" class="primary-action">Review</button>
+        </div>
+        <div class="toolbar" role="toolbar" aria-label="Diff controls">
+          <div class="segmented" role="group" aria-label="Diff layout">
+            <button type="button" id="mode-split" class="seg active"><span data-icon="columns"></span>Side by side</button>
+            <button type="button" id="mode-unified" class="seg"><span data-icon="rows"></span>Unified</button>
           </div>
+          <button type="button" id="comments-toggle" class="pill-toggle" aria-pressed="true">Comments</button>
+          <button type="button" id="comments-panel-toggle" class="pill-toggle" aria-expanded="false" aria-controls="comments-panel" title="Browse review threads (c)">Threads</button>
+          <select class="theme-select" data-theme-select aria-label="Color theme" title="Color theme">
+            <option value="system">System</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+          <a id="github-open" class="icon-button" target="_blank" rel="noreferrer noopener" title="Open on GitHub" aria-label="Open on GitHub" data-icon="external" hidden></a>
+          <button type="button" id="review-jump" class="primary-action">Review</button>
         </div>
         <div class="meta-row">
           <div id="status-nav" class="status-nav"></div>
@@ -59,10 +67,22 @@
       <section id="content" class="content" aria-live="polite"></section>
     </div>
   </div>
+  <aside id="comments-panel" class="comments-panel" aria-label="Review threads" hidden>
+    <header><h2>Review threads</h2><button type="button" id="comments-panel-close" aria-label="Close review threads">×</button></header>
+    <div class="comments-panel-filters">
+      <input type="search" id="comment-search" aria-label="Search comments" placeholder="Search comments or files">
+      <label>Status <select id="comment-status"><option value="all">All threads</option><option value="unresolved">Unresolved</option><option value="resolved">Resolved</option><option value="draft">Drafts</option></select></label>
+      <label>Author <select id="comment-author"><option value="">Everyone</option></select></label>
+    </div>
+    <div id="comments-panel-results" class="comments-panel-results"></div>
+  </aside>
   <div id="toast" class="toast" role="status" hidden></div>
   <script src="/assets/routes.js"></script>
   <script src="/assets/common.js"></script>
   <script src="/assets/patch-paths.js"></script>
+  <script src="/assets/highlight.js"></script>
+  <script src="/assets/syntax.js"></script>
+  <script src="/assets/prefetch.js"></script>
   <script src="/assets/viewer.js"></script>
 </body>
 </html>

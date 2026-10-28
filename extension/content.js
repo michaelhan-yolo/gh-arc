@@ -154,7 +154,7 @@
       <div class="notice" role="status">
         <svg class="info" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.6v.1"/></svg>
         <div>
-          <div><b>gh-arc isn't running</b> at <code></code>, so this is GitHub's page.</div>
+          <div><b>Phabricade isn't running</b> at <code></code>, so this is GitHub's page.</div>
           <div>Start it with <code>gh arc serve</code>.</div>
           <div class="actions"><button type="button" class="retry">Try again</button></div>
         </div>

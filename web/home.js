@@ -9,7 +9,7 @@
   const form = document.getElementById('open-form');
   const input = document.getElementById('open-input');
   // Each inbox section's icon in the sidebar; the pull request page's rail links to the same ones.
-  const SECTION_ICONS = { needsReview: 'inbox', mine: 'user', reviewed: 'eye' };
+  const SECTION_ICONS = { needsReview: 'inbox', mine: 'user', reviewed: 'eye', landed: 'check-circle' };
   let data = null;
 
   form.addEventListener('submit', (event) => {
@@ -148,7 +148,7 @@
         <span class="inbox-title">${escapeHtml(pr.title)}</span>
         <span class="inbox-repo" title="${escapeHtml(repo)}">${escapeHtml(repo.split('/')[1])}</span>
         <span class="inbox-lines" title="+${pr.additions} -${pr.deletions}">${lines.toLocaleString()} line${lines === 1 ? '' : 's'}</span>
-        <span class="inbox-updated">${time(pr.updatedAt)}</span>
+        <span class="inbox-updated" title="${pr.mergedAt ? 'Landed' : 'Updated'}">${time(pr.mergedAt || pr.updatedAt)}</span>
         <span class="inbox-badges">${statusChip(pr.reviewStatus)}</span>
         <span class="inbox-checks">${checksIcon(pr.checks)}</span>
       </a>

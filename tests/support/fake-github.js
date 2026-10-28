@@ -183,6 +183,10 @@ function actor(login) {
 
 function createState() {
   return {
+    bodyHTML: null,
+    reads: [],
+    rateRemaining: 4900,
+    holdPr: null,
     viewer: 'me',
     pendingReview: null,
     reviews: [],
@@ -286,6 +290,7 @@ function summary(state, pr) {
     state: live.merged ? 'MERGED' : live.closed ? 'CLOSED' : 'OPEN',
     isDraft: live.draft,
     merged: live.merged,
+    mergedAt: live.merged ? (live.mergedAt || '2026-10-03T10:00:00Z') : null,
     baseRefName: live.baseRefName,
     headRefName: pr.headRefName,
     baseRefOid: BASE_OID,
@@ -313,9 +318,9 @@ function pullRequest(state, number) {
   return {
     ...summary(state, STACK.find((pr) => pr.number === number)),
     body: 'Renders the widgets.',
-    bodyHTML: number === 3
+    bodyHTML: state.bodyHTML || (number === 3
       ? PR3_BODY
-      : '<p>Renders the widgets. Stacked on <a href="https://github.com/octo/widgets/pull/1">#1</a>.</p>',
+      : '<p>Renders the widgets. Stacked on <a href="https://github.com/octo/widgets/pull/1">#1</a>.</p>'),
     mergedAt: null,
     createdAt: '2026-10-01T09:00:00Z',
     updatedAt: '2026-10-02T09:00:00Z',
@@ -524,7 +529,10 @@ function graphql(state, query, variables) {
   }
   if (query.includes('query Inbox(')) {
     const prs = variables.query.includes('review-requested:') ? STACK.slice(0, 3)
-      : variables.query.includes('reviewed-by:') ? [STACK[3]] : MINE;
+      : variables.query.includes('reviewed-by:') ? [STACK[3]]
+      : variables.query.includes('is:merged')
+        ? STACK.concat(MINE).filter((pr) => state.prs[pr.number].merged && state.prs[pr.number].author === state.viewer)
+        : MINE.filter((pr) => !state.prs[pr.number].merged && !state.prs[pr.number].closed);
     return {
       viewer: { login: state.viewer },
       search: {
@@ -576,6 +584,7 @@ function graphql(state, query, variables) {
     };
   }
   if (query.includes('pendingReviews: reviews')) {
+    state.reads.push({ name: 'pr', number: variables.number });
     const known = [1, 2, 3].includes(variables.number);
     return {
       viewer: { login: state.viewer },
@@ -638,7 +647,7 @@ function startFakeGitHub(port = 0) {
     req.on('data', (chunk) => {
       body += chunk;
     });
-    req.on('end', () => {
+    req.on('end', async () => {
       const url = new URL(req.url, 'http://fake');
       const stored = url.pathname.match(/^\/storage\/([0-9a-f-]+)$/);
       if (stored) {
@@ -654,8 +663,13 @@ function startFakeGitHub(port = 0) {
         res.end(JSON.stringify({ message: 'Bad credentials' }));
         return;
       }
+      res.setHeader('X-RateLimit-Resource', url.pathname === '/graphql' ? 'graphql' : 'core');
+      res.setHeader('X-RateLimit-Remaining', String(state.rateRemaining ?? 4900));
+      res.setHeader('X-RateLimit-Limit', '5000');
+      res.setHeader('X-RateLimit-Reset', String(Math.floor(Date.now() / 1000) + 3600));
       if (url.pathname === '/graphql') {
         const { query, variables } = JSON.parse(body);
+        if (query.includes('pendingReviews: reviews') && state.holdPr) await state.holdPr;
         const result = graphql(state, query, variables);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result.errors ? { data: null, errors: result.errors } : { data: result }));

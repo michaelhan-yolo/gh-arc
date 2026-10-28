@@ -32,6 +32,27 @@ test('localizeImages points uploaded images and their links at the local route',
   assert.equal(localizeImages(null, remembered), null);
 });
 
+test('localizeImages proxies repository screenshots and their links at the pinned commit', () => {
+  const ref = 'a'.repeat(40);
+  const local = `/api/repo/octo/widgets/image?ref=${ref}&amp;path=visuals%2Freport+modal.png`;
+  for (const href of [
+    `https://github.com/octo/widgets/blob/${ref}/visuals/report%20modal.png?raw=true`,
+    `https://github.com/octo/widgets/raw/${ref}/visuals/report%20modal.png`,
+    `https://raw.githubusercontent.com/octo/widgets/${ref}/visuals/report%20modal.png`,
+  ]) {
+    const html = `<a href="${href}"><img src="${href}" width="360" alt="before"></a>`;
+    assert.equal(localizeImages(html), `<a href="${local}"><img src="${local}" width="360" alt="before"></a>`);
+  }
+  for (const href of [
+    `https://github.com/octo/widgets/blob/${ref}/src/app.js`,
+    `https://github.com.evil.example/octo/widgets/blob/${ref}/screenshot.png`,
+    `https://example.com/octo/widgets/blob/${ref}/screenshot.png`,
+  ]) {
+    const html = `<a href="${href}">Open</a>`;
+    assert.equal(localizeImages(html), html);
+  }
+});
+
 test('signedUrlFresh reads the expiry out of the link', () => {
   assert.equal(signedUrlFresh(signed('png', 1000), 900000), true);
   assert.equal(signedUrlFresh(signed('png', 1000), 990000), false);

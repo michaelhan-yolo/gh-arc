@@ -80,6 +80,33 @@ test('pages carry the page token and a script-locking CSP', async () => {
   assert.match(res.headers.get('content-security-policy'), /script-src 'self'/);
 });
 
+test('stale tokens are rejected before writes and only allowed origins receive a replacement', async () => {
+  const write = (token, origin = base) => fetch(prApi('drafts'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-GH-Arc-Token': token, Origin: origin },
+    body: JSON.stringify({ action: 'review', body: 'Preserve this review' }),
+  });
+  const stale = await write('old-page-token');
+  assert.equal(stale.status, 403);
+  assert.equal(stale.headers.get('cache-control'), 'no-store');
+  assert.equal(stale.headers.get('x-gh-arc-token'), 'page-token');
+  await stale.json();
+  assert.equal((await get(prApi('drafts'))).body.body, '');
+  assert.deepEqual(github.state.calls, []);
+
+  for (const origin of ['https://evil.example', 'null']) {
+    const foreign = await write('old-page-token', origin);
+    assert.equal(foreign.status, 403);
+    assert.equal(foreign.headers.get('x-gh-arc-token'), null);
+    assert.equal(foreign.headers.get('access-control-allow-origin'), null);
+    await foreign.json();
+  }
+  const saved = await write(stale.headers.get('x-gh-arc-token'));
+  assert.equal(saved.status, 200);
+  assert.equal(saved.headers.get('x-gh-arc-token'), null);
+  assert.equal((await saved.json()).body, 'Preserve this review');
+});
+
 function rawRequest(port, options) {
   return new Promise((resolve) => {
     const req = http.request({ host: '127.0.0.1', port, ...options }, (res) => {
@@ -468,4 +495,54 @@ test('a ship refuses a head that moved and an unknown merge method', async () =>
 test('an unknown pull request is a 404', async () => {
   const { status } = await get(`${base}/api/pr/octo/widgets/404/pr`);
   assert.equal(status, 404);
+});
+
+test('prefetch is consumed once and writes invalidate warmed PR metadata', async () => {
+  // Prime both REST and GraphQL rate budgets through ordinary foreground reads.
+  await get(prApi('pr'));
+  await get(prApi('patch'));
+  github.state.reads.length = 0;
+  assert.equal((await get(prApi('prefetch'))).body.prefetched, true);
+  assert.equal(github.state.reads.length, 1);
+  await get(prApi('pr'));
+  assert.equal(github.state.reads.length, 1);
+  await get(prApi('pr'));
+  assert.equal(github.state.reads.length, 2);
+  await get(prApi('prefetch'));
+  await post(prApi('drafts'), { action: 'review', body: 'Local draft' });
+  await get(prApi('pr'));
+  assert.equal(github.state.reads.length, 4);
+  assert.deepEqual(github.state.calls, []);
+});
+
+test('prefetch stops at the API reserve and limits concurrent PR loads', async () => {
+  const local = require('../../lib/server').createServer({ homeRepo: 'octo/widgets' });
+  const port = await local.listen(0);
+  const url = (number, action) => `http://127.0.0.1:${port}/api/pr/octo/widgets/${number}/${action}`;
+  let release;
+  try {
+    github.state.rateRemaining = 50;
+    await get(url(2, 'pr'));
+    await get(url(2, 'patch'));
+    const before = github.state.reads.length;
+    assert.equal((await get(url(1, 'prefetch'))).body.prefetched, false);
+    assert.equal(github.state.reads.length, before);
+    github.state.rateRemaining = 4900;
+    await get(url(2, 'pr'));
+    // Refresh the REST budget with a diff not already cached on this server.
+    await get(url(3, 'patch'));
+    github.state.holdPr = new Promise((resolve) => { release = resolve; });
+    const one = get(url(1, 'prefetch'));
+    const two = get(url(2, 'prefetch'));
+    // The first two requests enter the server before the third request is issued.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal((await get(url(3, 'prefetch'))).body.prefetched, false);
+    release();
+    assert.equal((await one).body.prefetched, true);
+    assert.equal((await two).body.prefetched, true);
+    assert.deepEqual(github.state.calls, []);
+  } finally {
+    release?.();
+    await local.close();
+  }
 });

@@ -8,7 +8,7 @@ const gh = require('../../lib/github');
 const { groupIntoStacks } = require('../../lib/stack');
 
 function fakeInbox(t, fail = () => null) {
-  const sizes = { needsReview: 31, mine: 82, reviewed: 61 };
+  const sizes = { needsReview: 31, mine: 82, reviewed: 61, landed: 164 };
   const calls = [];
   const nodes = (key, start, count) => Array.from({ length: count }, (_, offset) => {
     const number = start + offset + 1;
@@ -19,7 +19,9 @@ function fakeInbox(t, fail = () => null) {
   t.mock.method(global, 'fetch', async (url, options) => {
     const { query, variables } = JSON.parse(options.body);
     const key = variables?.query?.includes('review-requested:') ? 'needsReview'
-      : variables?.query?.includes('reviewed-by:') ? 'reviewed' : 'mine';
+      : variables?.query?.includes('reviewed-by:') ? 'reviewed'
+      : variables?.query?.includes('is:merged') ? 'landed' : 'mine';
+    if (key === 'landed') assert.match(variables.query, /author:@me/);
     const start = Number(variables?.cursor || 0);
     calls.push({ key, start, query });
     const status = fail({ key, start, calls });
@@ -28,8 +30,9 @@ function fakeInbox(t, fail = () => null) {
       return Response.json({ data: { viewer: { login: 'me' }, ...Object.fromEntries(
         Object.entries(sizes).map(([name, size]) => [name, { nodes: nodes(name, 0, Math.min(size, 60)) }])) } });
     }
-    assert.match(query, /search\(type: ISSUE, query: \$query, first: 30, after: \$cursor\)/);
-    const end = Math.min(start + 30, sizes[key]);
+    const pageSize = key === 'landed' ? 100 : 30;
+    assert.ok(query.includes(`search(type: ISSUE, query: $query, first: ${pageSize}, after: $cursor)`));
+    const end = Math.min(start + pageSize, sizes[key]);
     return Response.json({ data: { viewer: { login: 'me' }, search: {
       nodes: nodes(key, start, end - start), pageInfo: { hasNextPage: end < sizes[key], endCursor: String(end) },
     } } });
@@ -41,11 +44,13 @@ test('inbox loads every page in each section and keeps a stack spanning pages to
   const calls = fakeInbox(t);
   const data = await gh.fetchInbox();
   assert.equal(data.viewer.login, 'me');
-  for (const [key, size] of Object.entries({ needsReview: 31, mine: 82, reviewed: 61 })) {
+  for (const [key, size] of Object.entries({ needsReview: 31, mine: 82, reviewed: 61, landed: 164 })) {
     assert.equal(data[key].nodes.length, size);
     assert.equal(new Set(data[key].nodes.map((pr) => pr.number)).size, size);
   }
   assert.deepEqual(calls.filter((call) => call.key === 'mine').map((call) => call.start), [0, 30, 60]);
+  assert.deepEqual(calls.filter((call) => call.key === 'landed').map((call) => call.start), [0, 100]);
+  assert.doesNotMatch(calls.find((call) => call.key === 'landed').query, /latestOpinionatedReviews|statusCheckRollup/);
   const groups = groupIntoStacks(data.mine.nodes);
   assert.equal(groups.length, 1);
   assert.equal(groups[0].items.length, 82);

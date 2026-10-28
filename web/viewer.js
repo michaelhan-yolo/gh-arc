@@ -23,6 +23,10 @@
     mode: readPreference('ghArcMode', 'split'),
     imageMode: readPreference('ghArcImageMode', 'side'),
     commentsVisible: true,
+    commentsPanelOpen: false,
+    commentStatus: 'all',
+    commentAuthor: '',
+    commentSearch: '',
     inbox: null,
     ...pageState(),
   };
@@ -31,6 +35,9 @@
   function pageState() {
     return {
       files: [],
+      loaded: new Set(),
+      errors: {},
+      renderedFiles: new Set(),
       expanded: new Set(),
       collapsedFolders: new Set(),
       context: {},
@@ -86,6 +93,9 @@
     split: document.getElementById('mode-split'),
     unified: document.getElementById('mode-unified'),
     commentsToggle: document.getElementById('comments-toggle'),
+    commentsPanel: document.getElementById('comments-panel'),
+    commentsPanelToggle: document.getElementById('comments-panel-toggle'),
+    commentsResults: document.getElementById('comments-panel-results'),
     reviewJump: document.getElementById('review-jump'),
     statusNav: document.getElementById('status-nav'),
     stackNav: document.getElementById('stack-nav'),
@@ -95,7 +105,7 @@
     toast: document.getElementById('toast'),
   };
 
-  boot();
+  queueMicrotask(boot);
 
   // ---------------------------------------------------------------- data
 
@@ -156,62 +166,76 @@
     loadPage(true);
   }
 
-  // Loads the pull request the address bar names. The page on screen stays (dimmed) until the
-  // new one's data is in, then everything per pull request starts fresh.
+  // Each region can finish or fail independently; late responses belong to their original page.
   async function loadPage(initial) {
     const load = ++pageLoad;
     ROUTE = parseRoute();
     RANGE = parseRange();
     const previousStack = state.stack;
-    const stackRequest = api(prApi('stack')).catch((err) => ({ error: err.message }));
-    el.content.classList.add('is-loading');
+    Object.assign(state, pageState(), { stack: stackAround(previousStack, ROUTE.number) });
+    window.PhabricadePrefetch.reset();
+    el.filter.value = '';
+    el.heading.textContent = `${ROUTE.owner}/${ROUTE.repo}#${ROUTE.number}`;
+    el.heading.title = '';
+    el.stackNav.hidden = !state.stack;
+    document.title = `#${ROUTE.number} · Phabricade`;
+    el.avatar.innerHTML = el.subheading.innerHTML = el.checksPill.innerHTML = '';
+    el.statusNav.innerHTML = el.versionsNav.innerHTML = el.tabs.innerHTML = '';
+    el.githubOpen.hidden = true;
+    el.reviewJump.disabled = true;
+    renderContent();
+    renderFileList();
+    if (!initial) window.scrollTo(0, 0);
+    await Promise.all(['pr', 'patch', 'threads', 'stack'].map((region) => loadRegion(region, load)));
+    if (load === pageLoad) prefetchNeighbors();
+  }
+
+  async function loadRegion(region, load = pageLoad) {
+    delete state.errors[region];
     try {
-      const [data, patch, threads] = await Promise.all([
-        api(prApi('pr')),
-        api(prApi('patch', rangeQuery())),
-        api(prApi('threads')),
-      ]);
-      if (load !== pageLoad) {
-        return;
+      const payload = await api(prApi(region, region === 'patch' ? rangeQuery() : ''));
+      if (load !== pageLoad) return;
+      if (region === 'pr') {
+        state.data = payload;
+        state.refs.newRef ||= payload.pr.headRefOid;
+        state.versionPick = initialVersionPick(payload.pr);
+        document.title = `#${payload.pr.number} ${payload.pr.title} · Phabricade`;
+      } else if (region === 'patch') {
+        state.refs = { oldRef: payload.oldRef, newRef: payload.newRef || state.data?.pr.headRefOid };
+        state.fullContext = Boolean(payload.fullContext);
+        state.fileNotes = payload.notes || {};
+        state.files = parsePatch(payload.patch);
+      } else if (region === 'threads') {
+        applyThreads(payload);
+      } else {
+        state.stack = payload;
       }
-      Object.assign(state, pageState(), {
-        data,
-        refs: { oldRef: patch.oldRef, newRef: patch.newRef || data.pr.headRefOid },
-        fullContext: Boolean(patch.fullContext),
-        fileNotes: patch.notes || {},
-        files: parsePatch(patch.patch),
-        stack: stackAround(previousStack, ROUTE.number),
-      });
-      state.versionPick = initialVersionPick(data.pr);
-      applyThreads(threads);
-      document.title = `#${data.pr.number} ${data.pr.title}`;
-      el.filter.value = '';
-      render();
-      if (window.location.hash) {
-        jumpToHash();
-      } else if (!initial) {
-        window.scrollTo(0, 0);
-      }
+      state.loaded.add(region);
     } catch (err) {
-      if (load !== pageLoad) {
-        return;
-      }
-      renderFatal(err);
-    } finally {
-      if (load === pageLoad) {
-        el.content.classList.remove('is-loading');
-      }
+      if (load !== pageLoad) return;
+      state.errors[region] = err.message;
+      if (region === 'stack') state.stack = { error: err.message };
     }
-    const stack = await stackRequest;
-    if (load !== pageLoad) {
-      return;
+    if (state.data) render();
+    else {
+      renderContent();
+      renderFileList();
+      renderSummary();
     }
-    state.stack = stack;
-    renderStackNav();
-    if (state.data) {
-      renderSidebar();
-      renderStatusNav();
-    }
+    if (state.loaded.has('patch') && window.location.hash) jumpToHash();
+  }
+
+  function regionNotice(region, label) {
+    const error = state.errors[region];
+    return `<div class="region-notice" data-region="${region}" role="status">${error
+      ? `${escapeHtml(label)} could not load: ${escapeHtml(error)} <button type="button" data-region-retry="${region}">Retry</button>`
+      : `Loading ${escapeHtml(label.toLowerCase())}…`}</div>`;
+  }
+
+  function prefetchNeighbors() {
+    const stack = state.stack;
+    if (!stack || stack.error) return;
+    window.PhabricadePrefetch.schedule([stack.parent, ...stack.children].filter(Boolean).map(prPath));
   }
 
   // While a pull request's own stack loads, the stack it came from still describes it when it
@@ -262,6 +286,7 @@
       navigate(`${url.pathname}${url.search}${url.hash}`);
     });
     window.addEventListener('popstate', () => loadPage(false));
+    window.addEventListener('hashchange', jumpToHash);
   }
 
   function navigate(path) {
@@ -323,6 +348,7 @@
       .map((thread) => ({ ...thread, draftReplies: replies.filter((reply) => reply.threadId === thread.id) }))
       .concat(state.drafts.threads.map((draft) => ({ ...draft, kind: 'draft' })));
     state.comments = state.allComments.filter(isPositioned);
+    renderCommentsPanel();
   }
 
   function isPositioned(comment) {
@@ -338,7 +364,7 @@
   }
 
   function canComment(side) {
-    return !RANGE || (headView() && side === 'new');
+    return state.loaded.has('pr') && state.loaded.has('threads') && (!RANGE || (headView() && side === 'new'));
   }
 
   function findComment(id) {
@@ -397,6 +423,7 @@
   // ---------------------------------------------------------------- controls
 
   function bindControls() {
+    bindCommentsPanel();
     el.split.addEventListener('click', () => setMode('split'));
     el.unified.addEventListener('click', () => setMode('unified'));
     el.commentsToggle.addEventListener('click', () => {
@@ -557,7 +584,11 @@
     const match = (selector) => event.target.closest(selector);
     let node;
 
-    if ((node = match('[data-expand]'))) {
+    if ((node = match('[data-region-retry]'))) {
+      node.disabled = true;
+      loadRegion(node.dataset.regionRetry);
+
+    } else if ((node = match('[data-expand]'))) {
       state.expanded.add(node.getAttribute('data-expand'));
       rerenderFileById(Number(node.getAttribute('data-expand').split(':')[0]));
     } else if ((node = match('[data-context]'))) {
@@ -704,6 +735,10 @@
     if (event.metaKey || event.ctrlKey || event.altKey) {
       return;
     }
+    if (state.commentsPanelOpen && event.key === 'Escape') {
+      setCommentsPanel(false);
+      return;
+    }
     if (state.statusOpen && event.key === 'Escape') {
       event.preventDefault();
       setStatusPopover(false);
@@ -726,7 +761,10 @@
     if (event.target instanceof Element && event.target.closest('input, textarea, select, [contenteditable]')) {
       return;
     }
-    if (event.key === 's') {
+    if (event.key === 'c') {
+      event.preventDefault();
+      setCommentsPanel(!state.commentsPanelOpen);
+    } else if (event.key === 's') {
       event.preventDefault();
       setStackMenu(!state.stackMenuOpen);
     } else if (event.key === 'v' && state.data && state.data.pr.versions.length) {
@@ -885,23 +923,6 @@
     updateReviewJump();
     renderSidebar();
     renderContent();
-  }
-
-  function renderFatal(err) {
-    const hint = err.status === 401
-      ? 'Run <code>gh auth login</code>, then reload.'
-      : err.status === 404
-        ? 'Check the number and that your GitHub account can see this repository.'
-        : '';
-    el.heading.textContent = `${ROUTE.owner}/${ROUTE.repo}#${ROUTE.number}`;
-    el.avatar.innerHTML = '';
-    el.tabs.innerHTML = '';
-    el.content.innerHTML = `
-      <div class="fatal">
-        <strong>Couldn't load this pull request.</strong>
-        <p>${escapeHtml(err.message)}</p>
-        ${hint ? `<p class="muted">${hint}</p>` : ''}
-      </div>`;
   }
 
   // The header: author, number and title, then a row of status, checks, stack, versions and
@@ -1114,6 +1135,7 @@
 
   function updateReviewJump() {
     el.reviewJump.hidden = isOwnPr();
+    el.reviewJump.disabled = !state.loaded.has('threads');
     const drafts = state.drafts.threads.length + state.drafts.replies.length;
     el.reviewJump.innerHTML = `Review${drafts ? ` <span class="badge">${drafts}</span>` : ''}`;
     el.reviewJump.title = drafts ? `${drafts} unsubmitted comment${drafts === 1 ? '' : 's'}` : 'Write and submit a review';
@@ -1133,7 +1155,14 @@
     if (!window.location.hash) {
       return;
     }
-    const node = document.getElementById(window.location.hash.slice(1));
+    const hash = window.location.hash.slice(1);
+    if (hash.startsWith('thread-')) {
+      if (state.loaded.has('threads') && state.loaded.has('pr') && state.loaded.has('patch')) jumpToComment(decodeURIComponent(hash.slice(7)));
+      return;
+    }
+    const file = /^file-\d+$/.test(hash) && state.files[Number(hash.slice(5))];
+    if (file && !state.renderedFiles.has(file.id)) revealFile(file);
+    const node = document.getElementById(hash);
     if (node) {
       node.scrollIntoView({ block: 'start' });
     }
@@ -1144,12 +1173,22 @@
     if (!comment) {
       return;
     }
-    const file = isPositioned(comment) ? fileForComment(comment) : null;
-    if (file && isFileCollapsed(file)) {
-      state.expandedFiles.add(file.id);
-      state.collapsedFiles.delete(file.id);
-      rerenderFile(file);
+    if (RANGE && !comment.outdated && !comment.fileLevel && !isPositioned(comment)) {
+      navigate(`${prPath(ROUTE.number)}#thread-${encodeURIComponent(id)}`);
+      return;
     }
+    const file = !comment.outdated ? fileForComment(comment) : null;
+    if (state.filter) {
+      state.filter = '';
+      el.filter.value = '';
+      renderContent();
+      renderFileList();
+    }
+    state.commentsVisible = true;
+    state.openComments.add(id);
+    state.closedComments.delete(id);
+    updateCommentsToggle();
+    if (file) revealFile(file);
     if (!file && comment.kind === 'thread' && !state.outdatedOpen) {
       state.outdatedOpen = true;
       renderContent();
@@ -1159,6 +1198,77 @@
       node.scrollIntoView({ block: 'center' });
       setActiveComment(id);
     }
+  }
+
+  function setCommentsPanel(open) {
+    state.commentsPanelOpen = open;
+    el.commentsPanel.hidden = !open;
+    el.commentsPanelToggle.setAttribute('aria-expanded', String(open));
+    document.body.classList.toggle('comments-panel-open', open);
+    if (open) {
+      renderCommentsPanel();
+      document.getElementById('comment-search').focus();
+    } else {
+      el.commentsPanelToggle.focus();
+    }
+  }
+
+  function bindCommentsPanel() {
+    el.commentsPanelToggle.addEventListener('click', () => setCommentsPanel(!state.commentsPanelOpen));
+    document.getElementById('comments-panel-close').addEventListener('click', () => setCommentsPanel(false));
+    for (const [id, key, event] of [['comment-status', 'commentStatus', 'change'], ['comment-author', 'commentAuthor', 'change'], ['comment-search', 'commentSearch', 'input']]) {
+      document.getElementById(id).addEventListener(event, (event) => {
+        state[key] = event.target.value;
+        renderCommentsPanel();
+      });
+    }
+    el.commentsResults.addEventListener('click', (event) => {
+      const retry = event.target.closest('[data-region-retry]');
+      if (retry) loadRegion(retry.dataset.regionRetry);
+      const button = event.target.closest('[data-thread-jump]');
+      if (button) {
+        if (window.innerWidth < 1100) setCommentsPanel(false);
+        jumpToComment(button.dataset.threadJump);
+      }
+    });
+  }
+
+  function renderCommentsPanel() {
+    if (!state.commentsPanelOpen) return;
+    if (!state.loaded.has('threads')) {
+      el.commentsResults.innerHTML = regionNotice('threads', 'Comments');
+      return;
+    }
+    const authors = (comment) => comment.kind === 'draft'
+      ? [state.data?.viewer || 'You']
+      : comment.comments.map((reply) => reply.author.login).concat(comment.draftReplies?.length ? [state.data?.viewer || 'You'] : []);
+    const authorSelect = document.getElementById('comment-author');
+    const logins = [...new Set(state.allComments.flatMap(authors))].sort();
+    if (state.commentAuthor && !logins.includes(state.commentAuthor)) state.commentAuthor = '';
+    authorSelect.innerHTML = '<option value="">Everyone</option>' + logins.map((login) => `<option value="${escapeAttr(login)}">${escapeHtml(login)}</option>`).join('');
+    authorSelect.value = state.commentAuthor;
+    const text = (comment) => comment.kind === 'draft' ? comment.text : comment.comments.map((reply) => reply.body).concat((comment.draftReplies || []).map((reply) => reply.text)).join('\n');
+    const query = state.commentSearch.trim().toLowerCase();
+    const shown = state.allComments.filter((comment) => {
+      if (state.commentStatus === 'resolved' && !comment.resolved) return false;
+      if (state.commentStatus === 'unresolved' && (comment.resolved || comment.kind === 'draft')) return false;
+      if (state.commentStatus === 'draft' && comment.kind !== 'draft' && !comment.draftReplies?.length && !comment.comments.some((reply) => reply.pending)) return false;
+      if (state.commentAuthor && !authors(comment).includes(state.commentAuthor)) return false;
+      return !query || `${comment.path} ${text(comment)}`.toLowerCase().includes(query);
+    });
+    const groups = new Map();
+    for (const comment of shown) {
+      if (!groups.has(comment.path)) groups.set(comment.path, []);
+      groups.get(comment.path).push(comment);
+    }
+    el.commentsResults.innerHTML = `<p class="muted">${shown.length} of ${state.allComments.length} threads</p>` +
+      [...groups].sort(([a], [b]) => a.localeCompare(b)).map(([path, comments]) =>
+        `<section class="thread-group"><h3>${escapeHtml(path)}</h3>${comments.map((comment) => {
+          const pending = comment.kind === 'draft' || comment.draftReplies?.length || comment.comments?.some((reply) => reply.pending);
+          const flags = [comment.resolved ? 'Resolved' : 'Unresolved', pending ? 'Draft' : '', comment.outdated ? 'Outdated' : ''].filter(Boolean).join(' · ');
+          const where = comment.fileLevel ? 'File comment' : `${comment.side} ${comment.startLine || comment.endLine}${comment.startLine && comment.startLine !== comment.endLine ? `–${comment.endLine}` : ''}`;
+          return `<button type="button" class="thread-preview"${state.data && state.loaded.has('patch') ? '' : ' disabled'} data-thread-jump="${escapeAttr(comment.id)}"><strong>${escapeHtml([...new Set(authors(comment))].join(', '))}</strong><span class="thread-preview-meta">${escapeHtml(where)} · ${flags}</span><span class="thread-preview-body">${escapeHtml(text(comment))}</span></button>`;
+        }).join('')}</section>`).join('') + (shown.length ? '' : '<p class="muted">No matching threads.</p>');
   }
 
   // ---------------------------------------------------------------- status and shipping
@@ -1812,19 +1922,21 @@
   // ---------------------------------------------------------------- content
 
   function renderContent() {
-    if (!state.data) {
-      return;
-    }
+    const reading = captureReadingPosition();
     const saved = captureComposers();
     const files = getFilteredFiles();
     const ordered = files.length ? flattenFileTree(buildFileTree(files)) : [];
-    el.content.innerHTML = renderDetails() +
+    el.content.innerHTML = (state.data ? renderDetails() : regionNotice('pr', 'Pull request details')) +
+      (!state.loaded.has('threads') ? regionNotice('threads', 'Comments') : '') +
       '<div id="code" class="code-anchor"></div>' +
-      (ordered.length ? ordered.map(renderFile).join('') : renderNoChanges()) +
-      renderBotComments() +
-      renderReviewPanel();
+      (!state.loaded.has('patch') ? regionNotice('patch', 'Diff') : ordered.length ? ordered.map(renderFile).join('') : renderNoChanges()) +
+      (state.data ? renderBotComments() : '') +
+      (state.data && state.loaded.has('threads') ? renderReviewPanel() : '');
     prepareLinks(el.content);
     restoreComposers(saved);
+    observeFiles();
+    restoreReadingPosition(reading);
+    renderCommentsPanel();
     applyActiveHighlight();
   }
 
@@ -1838,16 +1950,54 @@
     return '<div class="empty">No changes to show.</div>';
   }
 
+  function captureReadingPosition() {
+    const edge = topbarOffset();
+    const file = Array.from(el.content.querySelectorAll('article.file')).find((node) => {
+      const box = node.getBoundingClientRect();
+      return box.top <= edge && box.bottom > edge;
+    });
+    return file ? { id: file.id, top: file.getBoundingClientRect().top } : null;
+  }
+
+  function restoreReadingPosition(reading) {
+    const file = reading && document.getElementById(reading.id);
+    if (file) window.scrollBy(0, file.getBoundingClientRect().top - reading.top);
+  }
+
+  let fileObserver;
+
+  function observeFiles() {
+    fileObserver?.disconnect();
+    fileObserver = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        fileObserver.unobserve(entry.target);
+        const file = state.files[Number(entry.target.dataset.lazyFile)];
+        if (file) rerenderFile(file);
+      }
+    }, { rootMargin: '800px 0px' });
+    el.content.querySelectorAll('[data-lazy-file]').forEach((node) => fileObserver.observe(node));
+  }
+
+  function revealFile(file) {
+    state.expandedFiles.add(file.id);
+    state.collapsedFiles.delete(file.id);
+    rerenderFile(file);
+  }
+
   function rerenderFile(file) {
     const node = file && document.getElementById(`file-${file.id}`);
     if (!node) {
       renderContent();
       return;
     }
+    const reading = captureReadingPosition();
     const saved = captureComposers();
+    state.renderedFiles.add(file.id);
     node.outerHTML = renderFile(file);
     prepareLinks(document.getElementById(`file-${file.id}`));
     restoreComposers(saved);
+    restoreReadingPosition(reading);
     applyActiveHighlight();
   }
 
@@ -2521,7 +2671,10 @@
     const collapsed = isFileCollapsed(file);
     const viewed = isViewed(file);
     let body = '';
-    if (!collapsed) {
+    if (!collapsed && !state.renderedFiles.has(file.id)) {
+      const lines = file.hunks.reduce((n, hunk) => n + hunk.rows.length, 0);
+      body = `<div class="file-placeholder" data-lazy-file="${file.id}" style="height:${Math.max(100, Math.min(lines * 22, 12000))}px">Diff loads as you scroll</div>`;
+    } else if (!collapsed) {
       const seen = { old: new Set(), new: new Set() };
       const image = renderImageDiff(file);
       const hunks = file.binary && !image
@@ -2544,7 +2697,7 @@
             ${fileStatusLabel(file)}
             <span class="file-meta"><span class="add">+${file.additions}</span> <span class="del">-${file.deletions}</span></span>
             ${githubFileLink(file)}
-            ${RANGE ? '' : `<label class="viewed-toggle" title="Mark viewed on GitHub"><input type="checkbox" data-viewed="${file.id}"${viewed ? ' checked' : ''}> Viewed</label>`}
+            ${RANGE ? '' : `<label class="viewed-toggle" title="Mark viewed on GitHub"><input type="checkbox" data-viewed="${file.id}"${viewed ? ' checked' : ''}${state.loaded.has('pr') ? '' : ' disabled'}> Viewed</label>`}
           </div>
         </header>
         ${body}
@@ -2564,7 +2717,7 @@
   }
 
   function githubFileLink(file) {
-    if (!file.newPath) {
+    if (!file.newPath || !state.data) {
       return '';
     }
     const ref = state.refs.newRef || state.data.pr.headRefOid;
@@ -2579,7 +2732,7 @@
 
   // Image files show as pictures, before and after; an SVG's text diff stays below them.
   function renderImageDiff(file) {
-    if (!IMAGE_FILE_RE.test(file.newPath || file.oldPath || '')) {
+    if (!state.data || !IMAGE_FILE_RE.test(file.newPath || file.oldPath || '')) {
       return '';
     }
     const sides = ['old', 'new'].filter((side) => (side === 'old' ? file.oldPath : file.newPath));
@@ -2639,7 +2792,7 @@
   function renderFileThreads(file) {
     const threads = state.allComments.filter((comment) =>
       comment.kind === 'thread' && comment.fileLevel && !comment.outdated && comment.path === commentPath(file, comment.side));
-    if (!threads.length || !state.commentsVisible) {
+    if (!threads.length || !state.commentsVisible || !state.data) {
       return '';
     }
     return `<div class="file-threads">${threads.map(renderComment).join('')}</div>`;
@@ -2695,6 +2848,7 @@
       hunk,
       rowsWithLoadedContext(file, hunk, visibleRows(hunk.rows, state.expanded.has(gapKey(file, hunk))))),
     seen);
+    window.PhabricadeSyntax.rows(rows, githubPath(file));
     const table = state.mode === 'split'
       ? renderSplitTable(file, hunk, rows)
       : renderUnifiedTable(file, hunk, rows);
@@ -2742,9 +2896,9 @@
       return `
         <tr>
           ${lineNumberCell(file, hunk, row.left, 'old')}
-          <td class="code side ${row.left ? classFor(row.left) : 'empty-side'}${lineHighlightClass(file, 'old', oldLine)}"${lineDataAttrs(file, 'old', oldLine)}>${cellText(row.left)}</td>
+          <td class="code side ${row.left ? classFor(row.left) : 'empty-side'}${lineHighlightClass(file, 'old', oldLine)}"${lineDataAttrs(file, 'old', oldLine)}>${cellText(row.left, 'old')}</td>
           ${lineNumberCell(file, hunk, row.right, 'new')}
-          <td class="code side ${row.right ? classFor(row.right) : 'empty-side'}${lineHighlightClass(file, 'new', newLine)}"${lineDataAttrs(file, 'new', newLine)}>${cellText(row.right)}</td>
+          <td class="code side ${row.right ? classFor(row.right) : 'empty-side'}${lineHighlightClass(file, 'new', newLine)}"${lineDataAttrs(file, 'new', newLine)}>${cellText(row.right, 'new')}</td>
         </tr>
         ${renderSideInlineRows(file, 'old', oldLine, 'split')}
         ${renderSideInlineRows(file, 'new', newLine, 'split')}
@@ -2804,7 +2958,7 @@
       return '';
     }
     const items = [];
-    if (state.commentsVisible) {
+    if (state.commentsVisible && state.data) {
       commentsForLine(file, side, line).forEach((comment) => {
         items.push(renderComment(comment));
       });
@@ -3103,7 +3257,7 @@
       <tr class="context-row">
         <td colspan="${colspan}">
           <button type="button" data-context="${escapeAttr(row.direction)}" data-context-key="${escapeAttr(row.key)}"
-            data-file-id="${row.fileId}" data-old-path="${escapeAttr(row.oldPath || '')}" data-new-path="${escapeAttr(row.newPath || '')}"
+            data-file-id="${row.fileId}"${state.data ? '' : ' disabled'} data-old-path="${escapeAttr(row.oldPath || '')}" data-new-path="${escapeAttr(row.newPath || '')}"
             data-old-from="${row.oldFrom || ''}" data-old-to="${row.oldTo || ''}" data-new-from="${row.newFrom || ''}" data-new-to="${row.newTo || ''}">
             ${escapeHtml(label)}
           </button>
@@ -3518,7 +3672,7 @@
         const left = dels[jj] || null;
         const right = adds[jj] || null;
         if (left && right) {
-          const pair = intraline(left.text, right.text);
+          const pair = intraline(left.text, right.text, left.syntaxOld, right.syntaxNew);
           left.html = pair.left;
           right.html = pair.right;
         }
@@ -3528,22 +3682,16 @@
     return out;
   }
 
-  function cellText(row) {
-    if (!row) {
-      return '';
-    }
-    if (row.type === 'context') {
-      return escapeHtml(row.text);
-    }
-    return row.html || escapeHtml(row.text);
+  function cellText(row, side) {
+    if (!row) return '';
+    return row.html || row[side === 'old' ? 'syntaxOld' : 'syntaxNew'] || row.syntax || escapeHtml(row.text);
   }
 
   function unifiedText(row) {
-    if (row.type === 'context-pair') {
-      return `<span class="line-prefix"> </span>${escapeHtml((row.new || row.old || {}).text || '')}`;
-    }
     const prefix = row.type === 'add' ? '+' : row.type === 'del' ? '-' : ' ';
-    return `<span class="line-prefix">${prefix}</span>${escapeHtml(row.text)}`;
+    const source = row.type === 'context-pair' ? row.new || row.old : row;
+    const text = source ? cellText(source, row.type === 'del' ? 'old' : 'new') : '';
+    return `<span class="line-prefix">${prefix}</span>${text}`;
   }
 
   function classFor(row) {
@@ -3869,6 +4017,7 @@
       oldLine: side === 'old' ? row.line : null,
       newLine: side === 'new' ? row.line : null,
       text: row.text,
+      syntax: row.syntax,
     };
   }
 
@@ -3944,14 +4093,12 @@
     return { id, oldPath, newPath, headers: [], hunks: [], binary: null, additions: 0, deletions: 0 };
   }
 
-  function intraline(oldText, newText) {
+  function intraline(oldText, newText, oldHtml, newHtml) {
     const prefix = commonPrefix(oldText, newText);
     const suffix = commonSuffix(oldText.slice(prefix), newText.slice(prefix));
-    const oldMid = oldText.slice(prefix, oldText.length - suffix);
-    const newMid = newText.slice(prefix, newText.length - suffix);
     return {
-      left: escapeHtml(oldText.slice(0, prefix)) + mark(oldMid) + escapeHtml(oldText.slice(oldText.length - suffix)),
-      right: escapeHtml(newText.slice(0, prefix)) + mark(newMid) + escapeHtml(newText.slice(newText.length - suffix)),
+      left: window.PhabricadeSyntax.markRange(oldHtml || escapeHtml(oldText), prefix, oldText.length - suffix),
+      right: window.PhabricadeSyntax.markRange(newHtml || escapeHtml(newText), prefix, newText.length - suffix),
     };
   }
 
@@ -3971,10 +4118,6 @@
       ii++;
     }
     return ii;
-  }
-
-  function mark(text) {
-    return text ? `<span class="mark">${escapeHtml(text)}</span>` : '';
   }
 
   function getFilteredFiles() {

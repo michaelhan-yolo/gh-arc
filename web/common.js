@@ -2,7 +2,7 @@
 
 (function () {
   const tokenMeta = document.querySelector('meta[name="gh-arc-token"]');
-  const token = tokenMeta ? tokenMeta.getAttribute('content') : '';
+  let token = tokenMeta ? tokenMeta.getAttribute('content') : '';
   const homeMeta = document.querySelector('meta[name="gh-arc-home-repo"]');
   const homeRepo = homeMeta ? homeMeta.getAttribute('content') || null : null;
   const routes = window.GhArcRoutes;
@@ -21,7 +21,16 @@
       init.headers['X-GH-Arc-Token'] = token;
       init.body = JSON.stringify(options.body);
     }
-    const response = await fetch(path, init);
+    let response = await fetch(path, init);
+    const freshToken = response.status === 403 && response.headers.get('X-GH-Arc-Token');
+    // This rejection happens before the action runs, so a restart can be recovered once.
+    if (init.method === 'POST' && freshToken) {
+      token = freshToken;
+      if (tokenMeta) tokenMeta.setAttribute('content', token);
+      init.headers['X-GH-Arc-Token'] = token;
+      await response.body.cancel();
+      response = await fetch(path, init);
+    }
     const text = await response.text();
     let payload = null;
     try {

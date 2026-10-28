@@ -132,7 +132,7 @@ test('with the server down, GitHub\'s page stays and says why', async ({ page, w
   await worker.evaluate(() => chrome.storage.sync.set({ server: 'http://127.0.0.1:9' }));
   await page.goto(`${GITHUB}/octo/widgets/pull/2`);
   await expect(page.locator('#stub')).toBeVisible();
-  await expect(page.locator('#gh-arc-notice')).toContainText("gh-arc isn't running at 127.0.0.1:9");
+  await expect(page.locator('#gh-arc-notice')).toContainText("Phabricade isn't running at 127.0.0.1:9");
   await expect(page).toHaveURL(`${GITHUB}/octo/widgets/pull/2`);
 
   await worker.evaluate((settings) => chrome.storage.sync.set(settings), { server });

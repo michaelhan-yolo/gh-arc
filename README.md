@@ -1,8 +1,8 @@
-# gh-arc
+# Phabricade
 
-Review GitHub pull requests and stacks side by side, the way Phabricator's Differential did. A `gh` extension that serves a local review page for any pull request: the stack it sits in, its existing review threads, draft inline comments, and one submitted review.
+Review GitHub pull requests and stacks side by side, the way Phabricator's Differential did. Phabricade is a `gh` extension that serves a local review page for any pull request: the stack it sits in, its existing review threads, draft inline comments, and one submitted review.
 
-The diff viewer comes from [local-arc](https://github.com/emersonding/local-arc) (MIT, Emerson Ding); gh-arc puts GitHub behind it.
+The diff viewer comes from [local-arc](https://github.com/emersonding/local-arc) (MIT, Emerson Ding); Phabricade puts GitHub behind it. The existing repository, `gh arc` command, local settings, and `diffs/…` links keep their names for compatibility.
 
 ## Install
 
@@ -36,6 +36,11 @@ Pages live at `http://localhost:7799/diffs/11505` for the repository you run `gh
 ## What you get
 
 - **Your stacks in the sidebar**: every open pull request of yours, grouped into stacks and drawn top first over the trunk; the stack on screen opens first, and one you're only viewing sits above them. The file list for the pull request on screen sits below, behind a handle you can drag (double-click resets it).
+- **Progressive loading**: the diff, PR details, comments and stack load independently. A failed section has its own Retry button, so you can keep reading the code. Review controls wait for the data they need.
+- **Large diffs**: distant file bodies render as you approach them; file and thread jumps render their destination immediately.
+- **Syntax colors**: common languages have syntax highlighting in both layouts and themes, alongside word-level change highlights. Highlighting uses the changed hunks; unknown languages and very large hunks remain plain text.
+- **Thread browser**: the **Threads** button (or `c`) opens a sidebar grouped by file, with author, resolved-status and text filters. Jump to current, outdated or draft threads without losing an open composer.
+- **Quicker navigation**: adjacent stack PRs preload when the page is idle; hovering over or focusing a PR link also preloads it. Up to two PRs preload at once, with a reserve of 20% of GitHub’s rate budget (at least 50 requests/points) for your actions. Warm metadata is reused once within 15 seconds and invalidated by writes.
 - **Side by side or unified diffs**, with intraline highlights, a file filter, and context that expands 20 lines at a time from the merge base and head.
 - **The stack**: pull requests chained by base branch, drawn as a graph from the top of the stack down to the trunk, with each one's review state, checks and size. In the top bar, `‹ #n` and `#m ›` (or `[` and `]`) move down and up, and the stack button between them (`2/7`, or `s`) opens the whole stack to jump to any pull request in it.
 - **Versions**, Phabricator's update history: one version per push, including heads a force push replaced. The `Versions · Base → V9` button in the top bar (or `v`) opens them; pick an old and a new version to see what changed between them. The comparison replays the old version's changes onto the new version's base, so a lower pull request merged up the stack in between drops out. Where base changes and the pull request touch the same lines, the file says so and shows both.
@@ -46,10 +51,10 @@ Pages live at `http://localhost:7799/diffs/11505` for the repository you run `gh
 - **Viewed files** sync with GitHub's checkbox and collapse. Lock files, generated files and diffs over 1,500 lines start collapsed.
 - **Narrower views**: one commit, or everything since your last review. You can comment on the right side when it's the head commit; other views are read-only.
 - **Details**: author, branches, reviewers, checks, labels, the description and the conversation, rendered by GitHub. Links to other pull requests open here.
-- **Inbox**: needs your review, your pull requests, and the ones you've reviewed, grouped into stacks. The sidebar shows one section at a time or all of them, and the chips under the search bar narrow it to one repository.
-- Light and dark themes follow the system.
+- **Inbox**: needs your review, your pull requests, and the ones you've reviewed, grouped into stacks. **Landed diffs** lists your merged pull requests, newest merge first, with a shortcut in the diff page's left rail. The sidebar shows one section at a time or all of them, and the chips under the search bar narrow it to one repository.
+- Choose **System**, **Light** or **Dark** in the diff toolbar or inbox sidebar. Your choice is remembered across pages and reloads; System follows your device's appearance.
 
-Keys: `j` and `k` step through files, `[` and `]` walk the stack, `s` opens the stack menu, `v` the versions, and ⌘/Ctrl+Enter saves a comment or submits the review.
+Keys: `j` and `k` step through files, `[` and `]` walk the stack, `s` opens the stack menu, `v` the versions, `c` the thread browser, Escape closes it, and ⌘/Ctrl+Enter saves a comment or submits the review.
 
 ## How it works
 
@@ -61,7 +66,7 @@ On your own pull requests there is nothing to accept or block: the Review button
 
 Submitting a review gets or creates your pending review on GitHub, adds each draft as a thread or reply, and then submits it with the action you chose. If GitHub rejects a draft (a line outside the diff, say), the draft stays local with the error, the rest wait in the pending review, and nothing is submitted until you resubmit.
 
-Images uploaded to a private repository's descriptions and comments come back from GitHub as links signed for five minutes, so a page left open would lose them. The server points them at `/api/image/<id>` instead and fetches each one itself: from the signed link while it lasts, and after that from `github.com/user-attachments` with your token, following redirects only to GitHub's own hosts and never sending the token to its storage. It serves a file only if its bytes are an image, and the browser keeps it, since an asset id never changes.
+Images uploaded to a private repository's descriptions and comments come back from GitHub as links signed for five minutes, so a page left open would lose them. The server points them at `/api/image/<id>` instead and fetches each one itself: from the signed link while it lasts, and after that from `github.com/user-attachments` with your token, following redirects only to GitHub's own hosts and never sending the token to its storage. Commit-pinned images linked from GitHub repositories in descriptions and comments also load through the authenticated server, including private media branches. It serves a file only if its bytes are an image, and the browser keeps it, since asset ids and commits never change.
 
 The server acts with your GitHub credentials, so it only answers requests addressed to `127.0.0.1` or `localhost`. Writes also need a token that is minted per server and embedded in the page, and the page runs under a CSP that allows only its own scripts.
 
@@ -77,7 +82,7 @@ The server acts with your GitHub credentials, so it only answers requests addres
 
 ## Chrome extension
 
-`extension/` is a Chrome extension that opens github.com pull requests in gh-arc. Opening `github.com/<owner>/<repo>/pull/<n>`, or its Files, Commits or Checks tab, lands on that pull request's gh-arc page instead; a commit from the Commits tab opens as that one commit. The extension only finds the gh-arc server on your machine and hands the tab to it, so your token stays in the server.
+`extension/` is a Chrome extension that opens github.com pull requests in Phabricade. Opening `github.com/<owner>/<repo>/pull/<n>`, or its Files, Commits or Checks tab, lands on that pull request's Phabricade page instead; a commit from the Commits tab opens as that one commit. The extension only finds the gh-arc server on your machine and hands the tab to it, so your token stays in the server.
 
 To install it:
 
@@ -88,10 +93,10 @@ To install it:
 Then:
 
 - **Back to GitHub**: the **GitHub** link after the branches in the top bar, and every other link from gh-arc to a pull request on GitHub, adds `?gh-arc=off`. That pull request then stays on GitHub in that tab until the tab closes.
-- **Off switches**: the extension's toolbar button turns the takeover off everywhere, or only for the repository on screen. On a pull request you kept on GitHub, **Open #n in gh-arc** goes back.
+- **Off switches**: the extension's toolbar button turns the takeover off everywhere, or only for the repository on screen. On a pull request you kept on GitHub, **Open #n in Phabricade** goes back.
 - **No server**: if nothing answers, GitHub's page stays, with a notice saying how to start gh-arc.
 - **Where pages open**: `http://diffs/` once `gh arc setup` has run, `http://localhost:7799` otherwise. For a server on another port (`gh arc serve -p 7800`), set the address under **Server** in the toolbar button.
-- **Back** returns to the page before the pull request, not to GitHub's copy of it. Landing on the same pull request again within a few seconds of opening it in gh-arc keeps GitHub's page, so nothing can bounce back and forth.
+- **Back** returns to the page before the pull request, not to GitHub's copy of it. Landing on the same pull request again within a few seconds of opening it in Phabricade keeps GitHub's page, so nothing can bounce back and forth.
 
 It asks for three permissions:
 
@@ -110,8 +115,11 @@ It asks for three permissions:
 
 ```sh
 npm install
+npm run vendor:syntax     # refresh the checked-in syntax bundle after updating its pinned package
 npm test                  # unit and API tests against an in-memory GitHub
 npx playwright test       # the review page and the extension in Chromium, same fake GitHub
 ```
 
 `tests/support/fake-github.js` stands in for GitHub (`GH_ARC_API_URL`, `GH_ARC_TOKEN`, `GH_ARC_HOME` point gh-arc at it), so no test touches a real pull request.
+
+Syntax highlighting uses the public [highlight.js](https://highlightjs.org/) browser bundle (BSD-3-Clause). Its pinned source package is a development dependency; the vendored bundle and license are in `web/vendor/`, so running Phabricade still needs no runtime packages.
